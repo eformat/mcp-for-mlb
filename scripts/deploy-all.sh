@@ -79,6 +79,12 @@ TRINO_HOST=localhost TRINO_PORT=8090 \
   DATA_DIR="${REPO_DIR}/data/weather" \
   python3 "${REPO_DIR}/scripts/load-weather-trino.py"
 
+echo "Loading pitch data..."
+TRINO_HOST=localhost TRINO_PORT=8090 \
+  MINIO_ENDPOINT=localhost:9001 \
+  DATA_DIR="${REPO_DIR}/data/pitch" \
+  python3 "${REPO_DIR}/scripts/load-pitch-trino.py"
+
 kill $PF_PID 2>/dev/null || true
 
 # ── 5. Create secrets ─────────────────────────────────────────

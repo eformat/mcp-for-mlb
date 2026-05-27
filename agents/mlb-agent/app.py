@@ -106,6 +106,10 @@ async def starters():
         cl.Starter(label="Hall of Fame voting", message="Which players received the highest percentage of Hall of Fame votes on their first ballot?"),
         cl.Starter(label="Salary leaders", message="Who were the highest-paid players in baseball in 2016?"),
         cl.Starter(label="Triple Crown winners", message="Which players won the batting Triple Crown (led league in AVG, HR, and RBI in the same season)?"),
+        cl.Starter(label="Fastball velocity trends", message="How has average fastball velocity changed from 2015 to 2019?"),
+        cl.Starter(label="Pitch type breakdown", message="What percentage of pitches were fastballs vs breaking balls vs offspeed in 2018?"),
+        cl.Starter(label="Highest spin rate", message="Which pitchers had the highest average spin rate on curveballs in the 2024 postseason?"),
+        cl.Starter(label="Strikeout pitch types", message="Which pitch types generate the most swinging strikes?"),
     ]
 
 

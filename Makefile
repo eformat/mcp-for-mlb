@@ -8,7 +8,10 @@ MCP_IMAGE    ?= mlb-mcp-server
 TAG          ?= latest
 PLATFORM     ?= linux/amd64
 
-.PHONY: help build build-agent build-mcp push push-agent push-mcp all deploy-all spicedb-schema spicedb-seed spicedb-check
+.PHONY: help build build-agent build-mcp push push-agent push-mcp all \
+	deploy-all deploy-agent deploy-mcp restart restart-agent restart-mcp status \
+	logs-agent logs-mcp load-data load-baseball load-weather load-pitch upload-data \
+	set-model register-prompt spicedb-seed
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | sort | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-20s\033[0m %s\n", $$1, $$2}'
@@ -48,18 +51,60 @@ set-model: ## Switch agent model: make set-model AGENT_MODEL=kimi-k2-6
 		MODEL_ENDPOINT=$(MAAS_BASE_URL)/$(AGENT_MODEL)/v1 \
 		-n mlb-agent
 
+PROMPT_MSG ?= Prompt update
+register-prompt: ## Register system_prompt.md in MLflow: make register-prompt PROMPT_MSG="v3 changes"
+	@./scripts/register-prompt.sh "$(PROMPT_MSG)"
+
+NAMESPACE ?= mlb-agent
+
 # ── Deployment ──────────────────────────────────────────────
 deploy-all: ## Deploy everything (MinIO → Trino → MCP → Agent)
 	./scripts/deploy-all.sh
 
+deploy-agent: ## Deploy/update agent to OpenShift
+	oc apply -k agents/mlb-agent/deploy -n $(NAMESPACE)
+
+deploy-mcp: ## Deploy/update MCP server to OpenShift
+	oc apply -k deploy/mlb-mcp-server -n $(NAMESPACE)
+
+restart: ## Restart agent + MCP server (picks up new images)
+	oc rollout restart deployment/mlb-mcp-server -n $(NAMESPACE)
+	oc rollout restart deployment/mlb-agent -n $(NAMESPACE)
+
+restart-agent: ## Restart agent only
+	oc rollout restart deployment/mlb-agent -n $(NAMESPACE)
+
+restart-mcp: ## Restart MCP server only
+	oc rollout restart deployment/mlb-mcp-server -n $(NAMESPACE)
+
+status: ## Show pods and routes in namespace
+	@echo "=== Pods ===" && oc get pods -n $(NAMESPACE) --no-headers | grep -v Completed
+	@echo "" && echo "=== Routes ===" && oc get routes -n $(NAMESPACE) -o custom-columns='NAME:.metadata.name,HOST:.spec.host' --no-headers
+
+logs-agent: ## Tail agent logs
+	oc logs -f deployment/mlb-agent -n $(NAMESPACE)
+
+logs-mcp: ## Tail MCP server logs
+	oc logs -f deployment/mlb-mcp-server -n $(NAMESPACE)
+
+# ── Data Loading ──────────────────────────────────────────
+load-data: load-baseball load-weather load-pitch ## Load all data into Trino
+
+load-baseball: ## Load baseball data into Trino (requires port-forward)
+	TRINO_HOST=localhost TRINO_PORT=8090 MINIO_ENDPOINT=localhost:9000 \
+		DATA_DIR=data/baseball python3 scripts/load-baseball-trino.py
+
+load-weather: ## Load weather data into Trino (requires port-forward)
+	TRINO_HOST=localhost TRINO_PORT=8090 MINIO_ENDPOINT=localhost:9000 \
+		DATA_DIR=data/weather python3 scripts/load-weather-trino.py
+
+load-pitch: ## Load pitch data into Trino (requires port-forward)
+	TRINO_HOST=localhost TRINO_PORT=8090 MINIO_ENDPOINT=localhost:9000 \
+		DATA_DIR=data/pitch python3 scripts/load-pitch-trino.py
+
+upload-data: ## Upload raw CSV files to MinIO (requires port-forward)
+	MINIO_ENDPOINT=localhost:9000 python3 scripts/upload-data-minio.py
+
 # ── SpiceDB ────────────────────────────────────────────────
 spicedb-seed: ## Seed SpiceDB with schema and relationships
 	python3 agents/mlb-agent/spicedb/seed_relationships.py
-
-USER ?= admin
-PERM ?= query
-DATASET ?= batting
-spicedb-check: ## Check permission: make spicedb-check USER=admin PERM=query DATASET=batting
-	@python3 -c "from authzed.api.v1 import Client; from grpcutil import insecure_bearer_token_credentials; \
-		c=Client('localhost:50051', insecure_bearer_token_credentials('averysecretpresharedkey')); \
-		print(c.CheckPermission(...))"

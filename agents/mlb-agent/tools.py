@@ -63,6 +63,11 @@ def query_trino(sql: str) -> str:
     - home_games (yearkey, teamkey, parkkey, games, attendance, spanfirst, spanlast)
     - weather_stations (station_id, city_name, latitude, longitude)
     - weather_daily (station_id, observation_date, tmax, tmin, prcp)
+    - pitch_pitches (ab_id, pitch_num, pitch_type, start_speed, spin_rate, pfx_x, pfx_z, px, pz, zone, type, code) — 3.6M pitches 2015-2019
+    - pitch_atbats (ab_id, g_id, batter_id, pitcher_id, event, inning, stand, p_throws) — 926K at-bats
+    - pitch_games (g_id, date, home_team, away_team, venue_name, weather, wind, attendance) — 12K games
+    - pitch_player_names (id, first_name, last_name) — player ID lookup
+    - statcast_pitches (game_pk, pitcher, batter, player_name, pitch_type, pitch_name, release_speed, release_spin_rate, launch_speed, launch_angle, bat_speed) — 27K pitches 2024-2025 postseason
 
     Computed stats (not stored):
     - AVG = CAST(H AS DOUBLE)/NULLIF(AB,0)
@@ -124,6 +129,7 @@ def describe_datasets(topic: str = "") -> str:
         "weather": {"tables": ["weather_stations", "weather_daily"], "years": "~1872-2019", "notes": "Daily tmax/tmin/prcp for 210 US cities."},
         "parks": {"tables": ["parks", "home_games"], "years": "1871-2025", "notes": "346 ballparks with attendance data."},
         "salaries": {"tables": ["salaries"], "years": "1985-2016", "notes": "Annual salary in USD. Data ends 2016."},
+        "pitch": {"tables": ["pitch_pitches", "pitch_atbats", "pitch_games", "pitch_player_names", "statcast_pitches"], "years": "2015-2019, 2024-2025 postseason", "notes": "Pitch-level: velocity, spin, movement, location. Join via ab_id/g_id."},
     }
     topic_lower = topic.strip().lower() if topic else "all"
     resolved = _DATASET_ALIASES.get(topic_lower, topic_lower)
@@ -157,6 +163,7 @@ def get_methodology(dataset_name: str) -> str:
         "weather": "NOAA GHCN-D daily data ~1872-2019 for 210 US cities. Gaps exist. Trace precip = 0.",
         "parks": "346 ballparks 1871-present. Park factors (BPF/PPF) in teams table.",
         "postseason": "All playoff/WS data. Format expanded over time. Small sample sizes.",
+        "pitch": "Statcast pitch-by-pitch data. 2015-2019 regular+post (3.6M pitches), 2024-2025 postseason only (27K). Velocity, spin, movement, location. No data 2020-2023.",
     }
     if resolved not in methodologies:
         return json.dumps({"error": f"Unknown dataset '{dataset_name}'. Available: {', '.join(sorted(methodologies.keys()))}"})

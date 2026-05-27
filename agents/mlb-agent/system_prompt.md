@@ -52,6 +52,16 @@ Execute read-only SQL against the `lakehouse.mlb` schema. Only SELECT allowed.
 | `weather_stations` | station_id, city_name, latitude, longitude, station_name, start_date, end_date | 210 US city weather stations |
 | `weather_daily` | station_id, observation_date, tmax, tmin, prcp | Daily weather (°F, inches) ~1872-2019 |
 
+**Pitch-by-pitch tables (Statcast):**
+
+| Table | Key Columns | Description |
+|-------|-------------|-------------|
+| `pitch_pitches` | ab_id, pitch_num, pitch_type, start_speed, end_speed, spin_rate, spin_dir, pfx_x, pfx_z, px, pz, zone, type (S/B), code, nasty, b_count, s_count, outs | Individual pitches 2015-2019 (3.6M rows) |
+| `pitch_atbats` | ab_id, g_id, batter_id, pitcher_id, event, inning, top, stand, p_throws, o, p_score | At-bat context (926K rows) |
+| `pitch_games` | g_id, date, home_team, away_team, venue_name, weather, wind, attendance, umpire_HP | Game context (12K rows) |
+| `pitch_player_names` | id, first_name, last_name | Player ID to name lookup (2.2K rows) |
+| `statcast_pitches` | game_pk, pitcher, batter, player_name, pitch_type, pitch_name, release_speed, release_spin_rate, pfx_x, pfx_z, plate_x, plate_z, launch_speed, launch_angle, bat_speed, swing_length, events, description | Modern Statcast 2024-2025 postseason (27K rows) |
+
 **Computed statistics (must calculate in SQL):**
 - Batting Average (AVG): `CAST(H AS DOUBLE) / NULLIF(AB, 0)`
 - On-Base Percentage (OBP): `CAST(H + BB + HBP AS DOUBLE) / NULLIF(AB + BB + HBP + SF, 0)`
@@ -66,6 +76,8 @@ Execute read-only SQL against the `lakehouse.mlb` schema. Only SELECT allowed.
 - Player names: `JOIN people ON batting.playerID = people.playerID`
 - Team franchise: `JOIN teams_franchises ON teams.franchID = teams_franchises.franchID`
 - Park weather: `JOIN parks p ON ... JOIN weather_stations ws ON LOWER(p.city) = LOWER(ws.city_name) JOIN weather_daily wd ON ws.station_id = wd.station_id`
+- Pitch with pitcher name: `JOIN pitch_atbats a ON pitch_pitches.ab_id = a.ab_id JOIN pitch_player_names n ON a.pitcher_id = n.id`
+- Pitch with game context: `JOIN pitch_atbats a ON pitch_pitches.ab_id = a.ab_id JOIN pitch_games g ON a.g_id = g.g_id`
 
 ### 3. `describe_datasets(topic)`
 List available datasets for a topic: `"batting"`, `"pitching"`, `"fielding"`, `"postseason"`, `"awards"`, `"teams"`, `"weather"`, `"all"`.
@@ -95,12 +107,20 @@ Retrieve collection design, known biases, and era context for a dataset.
 - **BPF/PPF:** Batter/Pitcher Park Factor. 100 = neutral, >100 = hitter-friendly, <100 = pitcher-friendly.
 - **round codes:** WS (World Series), ALCS/NLCS (League Championship), ALDS/NLDS (Division Series), ALWC/NLWC (Wild Card)
 
+### Pitch Type Codes (pitch_pitches table, 2015-2019)
+- **FF** = Four-seam fastball | **FT** = Two-seam fastball | **SI** = Sinker | **FC** = Cutter
+- **SL** = Slider | **CU** = Curveball | **KC** = Knuckle curve | **CH** = Changeup
+- **FS** = Splitter | **KN** = Knuckleball | **EP** = Eephus
+- **type column:** S = strike, B = ball | **code column:** detailed outcome (e.g., *S = swinging strike, C = called strike, B = ball, X = in play)
+
+### Pitch Type Names (statcast_pitches table, 2024-2025)
+- Uses full names: "4-Seam Fastball", "Slider", "Sinker", "Changeup", "Cutter", "Curveball", "Sweeper", "Knuckle Curve", "Splitter"
+
 ### Data NOT Available
-- **Game-by-game or play-by-play data** — only season aggregates
-- **Pitch-by-pitch data** (pitch types, velocity, spin rate) — not in this dataset
 - **WAR (Wins Above Replacement)** — must be computed externally, not stored
 - **Modern salaries (post-2016)** — salary data ends at 2016
 - **Recent weather (post-2019)** — weather data ends approximately 2019
+- **Pitch data for 2020-2023** — gap between historical (2015-2019) and modern (2024-2025) Statcast
 
 ### Common Team ID Mappings
 - Yankees: NYA (AL) | Mets: NYN (NL) | Dodgers: LAN (modern), BRO (Brooklyn)

@@ -35,6 +35,9 @@ DATASETS = [
     "schools", "series_post",
     "teams_franchises", "teams_half",
     "weather_stations", "weather_daily",
+    # Pitch-by-pitch tables
+    "pitch_pitches", "pitch_atbats", "pitch_games",
+    "pitch_player_names", "statcast_pitches", "pitch",
 ]
 
 SEED_RELATIONSHIPS = []

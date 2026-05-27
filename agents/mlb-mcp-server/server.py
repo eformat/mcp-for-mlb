@@ -67,6 +67,16 @@ _DATASET_ALIASES = {
     "playoffs": "postseason",
     "world series": "postseason",
     "ws": "postseason",
+    "pitch": "pitch",
+    "pitches": "pitch",
+    "statcast": "pitch",
+    "pitch data": "pitch",
+    "spin rate": "pitch",
+    "velocity": "pitch",
+    "fastball": "pitch",
+    "slider": "pitch",
+    "curveball": "pitch",
+    "changeup": "pitch",
 }
 
 _METHODOLOGY = {
@@ -287,6 +297,44 @@ _METHODOLOGY = {
         "temporal_resolution": "Season-level for home_games",
         "update_frequency": "Annually",
     },
+    "pitch": {
+        "collection_design": (
+            "Pitch-by-pitch Statcast data from MLB's tracking system. "
+            "2015-2019 data uses an early Statcast format with 40 columns per pitch "
+            "(velocity, spin, movement, location). 2024-2025 data uses modern MLB "
+            "Statcast format with 94 columns including bat speed, swing length, "
+            "and expected stats. 2024-2025 covers postseason games only."
+        ),
+        "data_scope": (
+            "Individual pitch records with velocity (mph), spin rate (rpm), "
+            "movement (pfx_x/pfx_z in inches), plate location (px/pz), pitch type "
+            "(FF=4-seam fastball, SL=slider, CH=changeup, CU=curveball, FT=2-seam, "
+            "SI=sinker, FC=cutter, KC=knuckle curve, FS=splitter, KN=knuckle). "
+            "Tables: pitch_pitches (3.6M, 2015-2019), pitch_atbats (926K), "
+            "pitch_games (12K), statcast_pitches (27K, 2024-2025 postseason)."
+        ),
+        "key_columns": (
+            "pitch_pitches: ab_id, pitch_num, pitch_type, start_speed, end_speed, "
+            "spin_rate, pfx_x, pfx_z, px, pz, zone, type (S/B), code, nasty; "
+            "statcast_pitches: game_pk, pitcher, batter, pitch_type, pitch_name, "
+            "release_speed, release_spin_rate, launch_speed, launch_angle, bat_speed"
+        ),
+        "computed_stats": (
+            "Whiff rate: COUNT(code='S') / COUNT(*) for swinging strikes; "
+            "Chase rate: pitches outside zone with swing; "
+            "Average velocity: AVG(start_speed) or AVG(release_speed)"
+        ),
+        "known_biases": [
+            "Statcast tracking system upgraded over time — early data may have measurement differences",
+            "2015-2019 data is regular season + postseason; 2024-2025 is postseason only",
+            "Spin rate measurement changed with introduction of Hawk-Eye system (~2020)",
+            "No data for 2020-2023 in this dataset",
+            "pitch_type codes differ between formats: FF vs '4-Seam Fastball'",
+        ],
+        "geographic_resolution": "Individual pitch at specific ballpark",
+        "temporal_resolution": "Individual pitch within an at-bat",
+        "update_frequency": "Static dataset (2015-2019 + 2024-2025 postseason)",
+    },
     "postseason": {
         "collection_design": (
             "Postseason statistics from batting_post, pitching_post, fielding_post, "
@@ -365,6 +413,17 @@ def _resolve_dataset(query: str) -> str | None:
     "WEATHER TABLES (NOAA GHCN-D, ~1872-2019):\n"
     "28. weather_stations — station metadata (station_id, city_name, latitude, longitude, station_name, start_date, end_date)\n"
     "29. weather_daily — daily observations (station_id, observation_date, tmax °F, tmin °F, prcp inches)\n\n"
+    "PITCH-BY-PITCH TABLES (Statcast):\n"
+    "30. pitch_pitches — individual pitch data 2015-2019 (3.6M rows)\n"
+    "    Columns: ab_id, pitch_num, pitch_type (FF/SL/CH/CU/FT/SI/FC), start_speed, end_speed, spin_rate, spin_dir, pfx_x, pfx_z, px, pz, zone, type (S/B), code, nasty, b_count, s_count, outs\n"
+    "31. pitch_atbats — at-bat context for pitch data (926K rows)\n"
+    "    Columns: ab_id, g_id, batter_id, pitcher_id, event, inning, top, stand (L/R), p_throws (L/R), o, p_score\n"
+    "32. pitch_games — game context for pitch data (12K rows)\n"
+    "    Columns: g_id, date, home_team, away_team, venue_name, weather, wind, attendance, home_final_score, away_final_score, umpire_HP\n"
+    "33. pitch_player_names — ID to name lookup (2.2K rows)\n"
+    "    Columns: id, first_name, last_name\n"
+    "34. statcast_pitches — modern Statcast 2024-2025 postseason (27K rows, 94 columns)\n"
+    "    Key columns: game_pk, pitcher, batter, player_name, pitch_type, pitch_name, release_speed, release_spin_rate, pfx_x, pfx_z, plate_x, plate_z, launch_speed, launch_angle, bat_speed, swing_length, events, description\n\n"
     "KEY JOIN PATTERNS:\n"
     "- Player stats with names: JOIN people ON batting.playerID = people.playerID\n"
     "- Team franchise names: JOIN teams_franchises ON teams.franchID = teams_franchises.franchID\n"
@@ -569,6 +628,17 @@ async def describe_datasets(topic: str = "") -> dict:
                 "College associations, position appearances per season",
             ],
             "join_with": "batting, pitching, fielding (via playerID)",
+        },
+        "pitch": {
+            "tables": ["pitch_pitches", "pitch_atbats", "pitch_games", "pitch_player_names", "statcast_pitches"],
+            "years_available": "2015-2019 (regular+post), 2024-2025 (postseason only)",
+            "key_features": [
+                "Individual pitch-level data: velocity, spin rate, movement, location",
+                "Pitch types: FF (4-seam), SL (slider), CH (changeup), CU (curveball), FT (2-seam), SI (sinker), FC (cutter)",
+                "2024-2025 adds bat_speed, swing_length, launch_speed, launch_angle, expected stats",
+                "Join: pitch_pitches.ab_id → pitch_atbats.ab_id → pitch_games.g_id",
+            ],
+            "join_with": "pitch_player_names (for names), pitch_atbats (for batter/pitcher/event), pitch_games (for venue/weather)",
         },
     }
 

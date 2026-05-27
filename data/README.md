@@ -59,3 +59,35 @@ USW00003965.csv  USW00013886.csv  USW00014764.csv  USW00014936.csv  USW00024121.
 USW00004853.csv  USW00013889.csv  USW00014768.csv  USW00014939.csv  USW00024127.csv  USW00093824.csv
 USW00012815.csv  USW00013893.csv  USW00014778.csv  USW00014941.csv  USW00024128.csv  USW00093842.csv
 ```
+
+pitch stats
+
+MLB Pitch Data 2015-2018
+
+- https://www.kaggle.com/datasets/pschale/mlb-pitch-data-20152018?resource=download
+
+MLB Postseason 2024 Pitch-by-Pitch Data
+
+- https://www.kaggle.com/datasets/janus137/mlb-postseason-2024-pitch-by-pitch-data
+
+MLB Postseason 2025 Pitch-by-Pitch Data
+
+- https://www.kaggle.com/datasets/janus137/mlb-postseason-2025-pitch-by-pitch-data
+
+```bash
+pitch/
+├── 2015-2018
+│   ├── 2019_atbats.csv
+│   ├── 2019_games.csv
+│   ├── 2019_pitches.csv
+│   ├── atbats.csv
+│   ├── ejections.csv
+│   ├── games.csv
+│   ├── pitches.csv
+│   └── player_names.csv
+├── 2024
+│   ├── Data_MLB_2024_StatcastPostseason_PitchByPitch_20241102a.csv
+│   └── Data_MLB_2024_StatcastPostSeasonToDate_PitchByPitch_20241006a.csv
+└── 2025
+    └── Data_MLB_2025_StatcastPostseason_PitchByPitch_20251102a.csv
+```

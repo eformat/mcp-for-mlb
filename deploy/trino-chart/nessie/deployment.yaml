@@ -1,0 +1,30 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nessie
+  labels:
+    app: nessie
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: nessie
+  template:
+    metadata:
+      labels:
+        app: nessie
+    spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: nessie
+          image: ghcr.io/projectnessie/nessie:latest
+          ports:
+            - containerPort: 19120
+              protocol: TCP
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL

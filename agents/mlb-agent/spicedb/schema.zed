@@ -1,0 +1,19 @@
+definition user {}
+
+definition organization {
+    relation member: user
+    relation admin: user
+    permission manage = admin
+}
+
+definition dataset {
+    relation owner: organization
+    relation viewer: user | organization#member
+    relation analyst: user | organization#member
+    relation admin: user | organization#admin
+
+    permission view_metadata = viewer + analyst + admin
+    permission query = analyst + admin
+    permission view_methodology = viewer + analyst + admin
+    permission export = admin
+}

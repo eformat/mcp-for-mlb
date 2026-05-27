@@ -1,0 +1,6 @@
+# Patch operator memory limits (upstream default 160Mi is too low, causes OOMKill)
+# Apply with: oc patch deployment spicedb-operator -n spicedb-operator --type=json --patch-file deploy/spicedb/operator-memory-patch.yaml
+[
+  {"op": "replace", "path": "/spec/template/spec/containers/0/resources/limits/memory", "value": "512Mi"},
+  {"op": "replace", "path": "/spec/template/spec/containers/0/resources/requests/memory", "value": "256Mi"}
+]

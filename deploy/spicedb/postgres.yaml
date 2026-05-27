@@ -1,0 +1,94 @@
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: spicedb-postgres-creds
+  labels:
+    app: spicedb-postgres
+stringData:
+  POSTGRES_USER: "spicedb"
+  POSTGRES_PASSWORD: "spicedb"
+  POSTGRES_DB: "spicedb"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spicedb-postgres
+  labels:
+    app: spicedb-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spicedb-postgres
+  template:
+    metadata:
+      labels:
+        app: spicedb-postgres
+    spec:
+      containers:
+      - name: postgres
+        image: registry.redhat.io/rhel9/postgresql-16:latest
+        env:
+        - name: POSTGRESQL_USER
+          valueFrom:
+            secretKeyRef:
+              name: spicedb-postgres-creds
+              key: POSTGRES_USER
+        - name: POSTGRESQL_PASSWORD
+          valueFrom:
+            secretKeyRef:
+              name: spicedb-postgres-creds
+              key: POSTGRES_PASSWORD
+        - name: POSTGRESQL_DATABASE
+          valueFrom:
+            secretKeyRef:
+              name: spicedb-postgres-creds
+              key: POSTGRES_DB
+        ports:
+        - containerPort: 5432
+        volumeMounts:
+        - name: data
+          mountPath: /var/lib/pgsql/data
+        resources:
+          requests:
+            memory: "256Mi"
+            cpu: "100m"
+          limits:
+            memory: "512Mi"
+            cpu: "500m"
+        readinessProbe:
+          exec:
+            command: ["/usr/libexec/check-container"]
+          initialDelaySeconds: 5
+          periodSeconds: 5
+      volumes:
+      - name: data
+        persistentVolumeClaim:
+          claimName: spicedb-postgres-data
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spicedb-postgres-data
+  labels:
+    app: spicedb-postgres
+spec:
+  accessModes:
+  - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spicedb-postgres
+  labels:
+    app: spicedb-postgres
+spec:
+  selector:
+    app: spicedb-postgres
+  ports:
+  - port: 5432
+    targetPort: 5432

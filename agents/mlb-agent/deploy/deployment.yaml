@@ -1,0 +1,77 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlb-agent
+  labels:
+    app.kubernetes.io/name: mlb-agent
+    app.kubernetes.io/component: agent
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mlb-agent
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: mlb-agent
+        app.kubernetes.io/component: agent
+    spec:
+      containers:
+        - name: agent
+          image: quay.io/eformat/mlb-agent:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: MODEL_NAME
+              value: "qwen36-27b"
+            - name: MODEL_ENDPOINT
+              value: "http://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen36-27b/v1"
+            - name: OPENAI_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: mlb-agent-maas-key
+                  key: api-key
+            - name: TRINO_QUERY_HOST
+              value: "trino"
+            - name: TRINO_QUERY_PORT
+              value: "8080"
+            - name: MLFLOW_TRACKING_URI
+              value: "https://mlflow.redhat-ods-applications.svc:8443/mlflow"
+            - name: MLFLOW_WORKSPACE
+              value: "mlb-agent"
+            - name: MLFLOW_EXPERIMENT_NAME
+              value: "mlb-data-agent"
+            - name: MLFLOW_TRACKING_TOKEN_FILE
+              value: "/var/run/secrets/kubernetes.io/serviceaccount/token"
+            - name: MLFLOW_TRACKING_INSECURE_TLS
+              value: "true"
+            - name: CHAINLIT_AUTH_SECRET
+              value: "a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2"
+            - name: AUTH_USERNAME
+              value: "admin"
+            - name: AUTH_PASSWORD
+              value: "admin"
+            - name: SPICEDB_ENDPOINT
+              value: "dev:50051"
+            - name: SPICEDB_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: dev-spicedb-config
+                  key: preshared_key
+          resources:
+            requests:
+              cpu: 200m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+          livenessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+          readinessProbe:
+            tcpSocket:
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 10

@@ -1,0 +1,30 @@
+{{- if .Values.route.enabled -}}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ template "trino.coordinator" . }}
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "trino.labels" . | nindent 4 }}
+  {{- with .Values.route.annotations }}
+  annotations:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+spec:
+  {{- with .Values.route.host }}
+  host: {{ . | quote }}
+  {{- end }}
+  port:
+    targetPort: {{ if .Values.server.config.https.enabled }}https{{ else }}http{{ end }}
+  to:
+    kind: Service
+    name: {{ include "trino.fullname" . }}
+    weight: 100
+  {{- if .Values.route.tls.enabled }}
+  tls:
+    termination: {{ .Values.route.tls.termination }}
+    {{- if eq .Values.route.tls.termination "edge" }}
+    insecureEdgeTerminationPolicy: {{ .Values.route.tls.insecureEdgeTerminationPolicy | default "Redirect" }}
+    {{- end }}
+  {{- end }}
+{{- end }}

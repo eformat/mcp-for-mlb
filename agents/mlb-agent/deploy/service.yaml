@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: mlb-agent
+  labels:
+    app.kubernetes.io/name: mlb-agent
+spec:
+  selector:
+    app.kubernetes.io/name: mlb-agent
+  ports:
+    - port: 8080
+      name: http
+      targetPort: 8080
+  type: ClusterIP

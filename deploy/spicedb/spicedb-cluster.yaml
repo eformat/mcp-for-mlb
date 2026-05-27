@@ -1,0 +1,17 @@
+apiVersion: authzed.com/v1alpha1
+kind: SpiceDBCluster
+metadata:
+  name: dev
+spec:
+  config:
+    datastoreEngine: postgres
+    replicas: 1
+  secretName: dev-spicedb-config
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: dev-spicedb-config
+stringData:
+  preshared_key: "averysecretpresharedkey"
+  datastore_uri: "postgres://spicedb:spicedb@spicedb-postgres:5432/spicedb?sslmode=disable"

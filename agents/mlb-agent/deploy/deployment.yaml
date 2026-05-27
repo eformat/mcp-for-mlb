@@ -70,8 +70,15 @@ spec:
               port: 8080
             initialDelaySeconds: 30
             periodSeconds: 30
+          volumeMounts:
+            - name: chainlit-data
+              mountPath: /app/data
           readinessProbe:
             tcpSocket:
               port: 8080
             initialDelaySeconds: 15
             periodSeconds: 10
+      volumes:
+        - name: chainlit-data
+          persistentVolumeClaim:
+            claimName: mlb-agent-chainlit-data

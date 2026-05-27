@@ -1,0 +1,5 @@
+.chainlit/
+.env/
+.claude/
+.files/
+venv/

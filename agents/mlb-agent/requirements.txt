@@ -1,9 +1,9 @@
 chainlit>=2.6
+aiosqlite>=0.20
 langchain>=0.3
 langchain-openai>=0.3
 langchain-core>=0.3
 langgraph>=0.4
 mlflow>=3.10
 trino>=0.329
-langchain-spicedb
 authzed

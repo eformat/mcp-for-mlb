@@ -9,13 +9,9 @@ import json
 import os
 import re
 
-import asyncio
-import concurrent.futures
-
 import grpc
 
 from langchain_core.tools import tool
-from langchain_spicedb.core import SpiceDBAuthorizer
 from authzed.api.v1 import Client as SpiceDBClient
 
 TRINO_HOST = os.environ.get("TRINO_QUERY_HOST", "trino")
@@ -181,54 +177,15 @@ class _BearerInterceptor(grpc.UnaryUnaryClientInterceptor):
         return continuation(new_details, request)
 
 
-class _AsyncBearerInterceptor(grpc.aio.UnaryUnaryClientInterceptor):
-    def __init__(self, token):
-        self._metadata = [("authorization", f"Bearer {token}")]
+SPICEDB_ENDPOINT = os.environ.get("SPICEDB_ENDPOINT", "dev:50051")
+SPICEDB_TOKEN = os.environ.get("SPICEDB_TOKEN", "averysecretpresharedkey")
 
-    async def intercept_unary_unary(self, continuation, client_call_details, request):
-        metadata = list(client_call_details.metadata or []) + self._metadata
-        new_details = grpc.aio.ClientCallDetails(
-            client_call_details.method, client_call_details.timeout,
-            metadata, client_call_details.credentials,
-            client_call_details.wait_for_ready,
-        )
-        return await continuation(new_details, request)
-
-
-class _InsecureSpiceDBAuthorizer(SpiceDBAuthorizer):
-    """SpiceDBAuthorizer using a plaintext gRPC channel for in-cluster comms."""
-
-    @property
-    def client(self) -> SpiceDBClient:
-        current_loop = None
-        try:
-            current_loop = asyncio.get_running_loop()
-        except RuntimeError:
-            pass
-
-        if self._client is None or self._client_loop is not current_loop:
-            if current_loop:
-                channel = grpc.aio.insecure_channel(
-                    self.spicedb_endpoint,
-                    interceptors=[_AsyncBearerInterceptor(self.spicedb_token)],
-                )
-            else:
-                channel = grpc.intercept_channel(
-                    grpc.insecure_channel(self.spicedb_endpoint),
-                    _BearerInterceptor(self.spicedb_token),
-                )
-            self._client = SpiceDBClient.__new__(SpiceDBClient)
-            self._client.init_stubs(channel)
-            self._client_loop = current_loop
-        return self._client
-
-
-_spicedb = _InsecureSpiceDBAuthorizer(
-    spicedb_endpoint=os.environ.get("SPICEDB_ENDPOINT", "dev:50051"),
-    spicedb_token=os.environ.get("SPICEDB_TOKEN", "averysecretpresharedkey"),
-    subject_type="user",
-    resource_type="dataset",
+_spicedb_channel = grpc.intercept_channel(
+    grpc.insecure_channel(SPICEDB_ENDPOINT),
+    _BearerInterceptor(SPICEDB_TOKEN),
 )
+_spicedb_client = SpiceDBClient.__new__(SpiceDBClient)
+_spicedb_client.init_stubs(_spicedb_channel)
 
 
 @tool
@@ -243,21 +200,21 @@ def check_dataset_permission(subject_id: str, resource_id: str, permission: str)
     Returns:
         JSON with 'allowed' (true/false) and details.
     """
-    def _check():
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(
-                _spicedb.check_permission(
-                    subject_id=subject_id,
-                    resource_id=resource_id,
-                    permission=permission,
-                )
-            )
-        finally:
-            loop.close()
+    from authzed.api.v1 import (
+        CheckPermissionRequest, CheckPermissionResponse,
+        ObjectReference, SubjectReference,
+    )
 
-    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-        allowed = pool.submit(_check).result(timeout=10)
+    resp = _spicedb_client.CheckPermission(
+        CheckPermissionRequest(
+            resource=ObjectReference(object_type="dataset", object_id=resource_id),
+            permission=permission,
+            subject=SubjectReference(
+                object=ObjectReference(object_type="user", object_id=subject_id)
+            ),
+        )
+    )
+    allowed = resp.permissionship == CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
 
     return json.dumps({
         "allowed": allowed,

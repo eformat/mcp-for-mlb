@@ -22,8 +22,19 @@ SPICEDB_TOKEN = os.environ.get("SPICEDB_TOKEN", "averysecretpresharedkey")
 SCHEMA_PATH = Path(__file__).parent / "schema.zed"
 
 DATASETS = [
+    # High-level dataset names
     "batting", "pitching", "fielding", "teams", "parks",
     "postseason", "awards", "hall_of_fame", "salaries", "weather",
+    # All actual table names
+    "allstar_full", "appearances", "awards_managers", "awards_players",
+    "awards_share_managers", "awards_share_players",
+    "batting_post", "college_playing",
+    "fielding_of", "fielding_of_split", "fielding_post",
+    "home_games", "managers", "managers_half",
+    "people", "pitching_post",
+    "schools", "series_post",
+    "teams_franchises", "teams_half",
+    "weather_stations", "weather_daily",
 ]
 
 SEED_RELATIONSHIPS = []

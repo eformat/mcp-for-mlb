@@ -100,17 +100,21 @@ SPICEDB_ENDPOINT=localhost:50051 \
   python3 "${REPO_DIR}/agents/mlb-agent/spicedb/seed_relationships.py" 2>/dev/null || echo "SpiceDB seed skipped"
 kill $SPICEDB_PF_PID 2>/dev/null || true
 
-# ── 7. Deploy MCP server ─────────────────────────────────────
-echo "==> 7. Deploying MCP server"
+# ── 7. Deploy RBAC ────────────────────────────────────────────
+echo "==> 7. Deploying RBAC"
+oc apply -f "${REPO_DIR}/deploy/mlflow-rbac.yaml" -n "${NAMESPACE}"
+
+# ── 8. Deploy MCP server ─────────────────────────────────────
+echo "==> 8. Deploying MCP server"
 oc apply -k "${REPO_DIR}/deploy/mlb-mcp-server" -n "${NAMESPACE}"
 oc rollout status deployment/mlb-mcp-server -n "${NAMESPACE}" --timeout=120s
 
-# ── 8. Deploy agent ───────────────────────────────────────────
-echo "==> 8. Deploying agent"
+# ── 9. Deploy agent ───────────────────────────────────────────
+echo "==> 9. Deploying agent"
 oc apply -k "${REPO_DIR}/agents/mlb-agent/deploy" -n "${NAMESPACE}"
 oc rollout status deployment/mlb-agent -n "${NAMESPACE}" --timeout=120s
 
-# ── 9. Summary ────────────────────────────────────────────────
+# ── 10. Summary ───────────────────────────────────────────────
 echo ""
 echo "============================================"
 echo "  Deployment Complete"

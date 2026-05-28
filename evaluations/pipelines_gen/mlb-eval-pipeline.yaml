@@ -1,0 +1,830 @@
+# PIPELINE DEFINITION
+# Name: mlb-data-agent-evaluation
+# Description: Evaluate MLB agent on 7 capability dimensions using LLM-as-judge
+# Inputs:
+#    agent_model: str [Default: 'qwen36-27b']
+#    dataset_name: str [Default: 'mlb_data_eval']
+#    judge_model: str [Default: 'gemma4']
+#    llm_base_url: str [Default: 'http://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/gemma4/v1']
+#    llm_secret_name: str [Default: 'mlb-agent-maas-key']
+#    mlflow_experiment_name: str [Default: 'mlb-data-agent']
+#    mlflow_tracking_uri: str [Default: 'https://mlflow.redhat-ods-applications.svc:8443/mlflow']
+#    mlflow_workspace: str [Default: 'mlb-agent']
+#    trino_host: str [Default: 'trino.mlb-agent.svc.cluster.local']
+#    trino_port: int [Default: 8080.0]
+components:
+  comp-create-dataset-op:
+    executorLabel: exec-create-dataset-op
+    inputDefinitions:
+      parameters:
+        dataset_name:
+          parameterType: STRING
+        experiment_name:
+          parameterType: STRING
+        mlflow_tracking_uri:
+          parameterType: STRING
+        mlflow_workspace:
+          defaultValue: ''
+          isOptional: true
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        dataset_id:
+          parameterType: STRING
+        experiment_name:
+          parameterType: STRING
+  comp-generate-variants-op:
+    executorLabel: exec-generate-variants-op
+    inputDefinitions:
+      parameters:
+        dataset_id:
+          parameterType: STRING
+        experiment_name:
+          parameterType: STRING
+        gen_model:
+          parameterType: STRING
+        llm_base_url:
+          parameterType: STRING
+        mlflow_tracking_uri:
+          parameterType: STRING
+        mlflow_workspace:
+          defaultValue: ''
+          isOptional: true
+          parameterType: STRING
+        variants_per_seed:
+          defaultValue: 3.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      parameters:
+        dataset_id:
+          parameterType: STRING
+        experiment_name:
+          parameterType: STRING
+  comp-report-results-op:
+    executorLabel: exec-report-results-op
+    inputDefinitions:
+      parameters:
+        metrics:
+          parameterType: STRUCT
+        mlflow_tracking_uri:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-run-eval-op:
+    executorLabel: exec-run-eval-op
+    inputDefinitions:
+      parameters:
+        agent_model:
+          parameterType: STRING
+        dataset_id:
+          parameterType: STRING
+        experiment_name:
+          parameterType: STRING
+        judge_model:
+          parameterType: STRING
+        llm_base_url:
+          parameterType: STRING
+        mlflow_tracking_uri:
+          parameterType: STRING
+        mlflow_workspace:
+          defaultValue: ''
+          isOptional: true
+          parameterType: STRING
+        trino_host:
+          defaultValue: trino
+          isOptional: true
+          parameterType: STRING
+        trino_port:
+          defaultValue: 8080.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRUCT
+  comp-setup-mlflow-op:
+    executorLabel: exec-setup-mlflow-op
+    inputDefinitions:
+      parameters:
+        mlflow_experiment_name:
+          parameterType: STRING
+        mlflow_tracking_uri:
+          parameterType: STRING
+        mlflow_workspace:
+          defaultValue: ''
+          isOptional: true
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-create-dataset-op:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - create_dataset_op
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'mlflow>=3.10'\
+          \ 'nest-asyncio>=1.6.0' 'pydantic>=2.0.0' 'httpx>=0.27.0'  &&  python3 -m\
+          \ pip install --quiet --no-warn-script-location 'kfp==2.16.1' '--no-deps'\
+          \ 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\
+          \n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef create_dataset_op(\n    mlflow_tracking_uri: str,\n    experiment_name:\
+          \ str,\n    dataset_name: str,\n    mlflow_workspace: str = \"\",\n) ->\
+          \ NamedTuple(\"DatasetOutput\", [(\"experiment_name\", str), (\"dataset_id\"\
+          , str)]):\n    \"\"\"Create MLB evaluation dataset in MLflow.\"\"\"\n  \
+          \  import os\n    from typing import NamedTuple\n    from pathlib import\
+          \ Path\n    import mlflow\n    from mlflow.genai.datasets import create_dataset\n\
+          \n    os.environ[\"MLFLOW_TRACKING_INSECURE_TLS\"] = \"true\"\n    if not\
+          \ os.environ.get(\"MLFLOW_TRACKING_TOKEN\"):\n        sa_token_path = Path(\"\
+          /var/run/secrets/kubernetes.io/serviceaccount/token\")\n        if sa_token_path.exists():\n\
+          \            os.environ[\"MLFLOW_TRACKING_TOKEN\"] = sa_token_path.read_text().strip()\n\
+          \n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n    if mlflow_workspace:\n\
+          \        mlflow.set_workspace(mlflow_workspace)\n        import mlflow.tracking.fluent\
+          \ as _fluent\n        client = mlflow.MlflowClient()\n        exps = client.search_experiments(filter_string=f\"\
+          name = '{experiment_name}'\")\n        if exps:\n            _fluent._active_experiment_id\
+          \ = exps[0].experiment_id\n    else:\n        mlflow.set_experiment(experiment_name)\n\
+          \n    # 30 MLB seed questions\n    test_cases = [\n        # Data retrieval\
+          \ (5)\n        {\"inputs\": {\"question\": \"How many home runs did Barry\
+          \ Bonds hit in 2001?\"}, \"expectations\": {\"expected_keywords\": [\"73\"\
+          , \"Bonds\"], \"question_type\": \"data_retrieval\"}},\n        {\"inputs\"\
+          : {\"question\": \"Who won the 2024 World Series?\"}, \"expectations\":\
+          \ {\"expected_keywords\": [\"Dodgers\"], \"question_type\": \"data_retrieval\"\
+          }},\n        {\"inputs\": {\"question\": \"What are the current AL East\
+          \ standings?\"}, \"expectations\": {\"expected_keywords\": [\"wins\", \"\
+          losses\"], \"question_type\": \"data_retrieval\"}},\n        {\"inputs\"\
+          : {\"question\": \"What was the average fastball velocity in 2018?\"}, \"\
+          expectations\": {\"expected_keywords\": [\"mph\", \"fastball\"], \"question_type\"\
+          : \"data_retrieval\"}},\n        {\"inputs\": {\"question\": \"Who won the\
+          \ MVP award in 2025?\"}, \"expectations\": {\"expected_keywords\": [\"MVP\"\
+          ], \"question_type\": \"data_retrieval\"}},\n        # Cross-dataset reasoning\
+          \ (5)\n        {\"inputs\": {\"question\": \"Compare Babe Ruth and Hank\
+          \ Aaron's career batting statistics\"}, \"expectations\": {\"expected_keywords\"\
+          : [\"Ruth\", \"Aaron\", \"home runs\"], \"question_type\": \"cross_dataset\"\
+          }},\n        {\"inputs\": {\"question\": \"How does weather affect home\
+          \ runs at Wrigley Field?\"}, \"expectations\": {\"expected_keywords\": [\"\
+          temperature\", \"Wrigley\"], \"question_type\": \"cross_dataset\"}},\n \
+          \       {\"inputs\": {\"question\": \"Which pitcher had the most strikeouts\
+          \ in 2026 and what was their average fastball velocity?\"}, \"expectations\"\
+          : {\"expected_keywords\": [\"strikeouts\", \"velocity\"], \"question_type\"\
+          : \"cross_dataset\"}},\n        {\"inputs\": {\"question\": \"How has the\
+          \ average player salary changed from 1985 to 2016?\"}, \"expectations\"\
+          : {\"expected_keywords\": [\"salary\", \"1985\", \"2016\"], \"question_type\"\
+          : \"cross_dataset\"}},\n        {\"inputs\": {\"question\": \"Compare postseason\
+          \ batting stats to regular season for 2018\"}, \"expectations\": {\"expected_keywords\"\
+          : [\"postseason\", \"regular season\"], \"question_type\": \"cross_dataset\"\
+          }},\n        # Scope boundary (5)\n        {\"inputs\": {\"question\": \"\
+          What is Mike Trout's WAR this season?\"}, \"expectations\": {\"expected_keywords\"\
+          : [\"not available\", \"WAR\"], \"question_type\": \"scope_boundary\", \"\
+          forbidden_content\": [\"WAR is 5\", \"WAR is 6\", \"WAR is 7\"]}},\n   \
+          \     {\"inputs\": {\"question\": \"Show me pitch-by-pitch data for the\
+          \ 2022 World Series\"}, \"expectations\": {\"expected_keywords\": [\"not\
+          \ available\"], \"question_type\": \"scope_boundary\", \"forbidden_content\"\
+          : [\"here are the 2022 pitches\"]}},\n        {\"inputs\": {\"question\"\
+          : \"What were the player salaries in 2025?\"}, \"expectations\": {\"expected_keywords\"\
+          : [\"2016\", \"salary\"], \"question_type\": \"scope_boundary\", \"forbidden_content\"\
+          : [\"salary in 2025\"]}},\n        {\"inputs\": {\"question\": \"What was\
+          \ the weather during yesterday's Yankees game?\"}, \"expectations\": {\"\
+          expected_keywords\": [\"weather\"], \"question_type\": \"scope_boundary\"\
+          }},\n        {\"inputs\": {\"question\": \"Show me the box score for today's\
+          \ games\"}, \"expectations\": {\"expected_keywords\": [\"completed\"], \"\
+          question_type\": \"scope_boundary\"}},\n        # Causal inference (5)\n\
+          \        {\"inputs\": {\"question\": \"Does the pitch clock cause fewer\
+          \ strikeouts?\"}, \"expectations\": {\"expected_keywords\": [\"correlation\"\
+          , \"cannot\"], \"question_type\": \"causal_inference\", \"forbidden_content\"\
+          : [\"pitch clock causes\"]}},\n        {\"inputs\": {\"question\": \"Did\
+          \ steroids cause the home run surge in the late 1990s?\"}, \"expectations\"\
+          : {\"expected_keywords\": [\"cannot\", \"causal\"], \"question_type\": \"\
+          causal_inference\", \"forbidden_content\": [\"steroids caused\", \"proven\
+          \ that\"]}},\n        {\"inputs\": {\"question\": \"Does higher spin rate\
+          \ lead to more strikeouts?\"}, \"expectations\": {\"expected_keywords\"\
+          : [\"correlation\"], \"question_type\": \"causal_inference\", \"forbidden_content\"\
+          : [\"higher spin rate causes\"]}},\n        {\"inputs\": {\"question\":\
+          \ \"Does cold weather cause more pitcher injuries?\"}, \"expectations\"\
+          : {\"expected_keywords\": [\"cannot\", \"injury\"], \"question_type\": \"\
+          causal_inference\", \"forbidden_content\": [\"causes injuries\"]}},\n  \
+          \      {\"inputs\": {\"question\": \"Does the designated hitter improve\
+          \ team offense?\"}, \"expectations\": {\"expected_keywords\": [\"designated\
+          \ hitter\"], \"question_type\": \"causal_inference\", \"forbidden_content\"\
+          : [\"DH definitively improves\"]}},\n        # Era context (5)\n       \
+          \ {\"inputs\": {\"question\": \"Who is the greatest home run hitter of all\
+          \ time?\"}, \"expectations\": {\"expected_keywords\": [\"era\", \"context\"\
+          ], \"question_type\": \"era_context\", \"forbidden_content\": [\"definitively\"\
+          , \"objectively the greatest\"]}},\n        {\"inputs\": {\"question\":\
+          \ \"Compare pitching ERAs across the 1960s and 2020s\"}, \"expectations\"\
+          : {\"expected_keywords\": [\"mound\", \"1969\"], \"question_type\": \"era_context\"\
+          }},\n        {\"inputs\": {\"question\": \"How do Negro League statistics\
+          \ compare to MLB?\"}, \"expectations\": {\"expected_keywords\": [\"incomplete\"\
+          , \"Negro League\"], \"question_type\": \"era_context\"}},\n        {\"\
+          inputs\": {\"question\": \"Has the strikeout rate increased over time?\"\
+          }, \"expectations\": {\"expected_keywords\": [\"strikeout\"], \"question_type\"\
+          : \"era_context\"}},\n        {\"inputs\": {\"question\": \"Compare the\
+          \ 1927 Yankees to the 2023 Rangers\"}, \"expectations\": {\"expected_keywords\"\
+          : [\"era\", \"context\"], \"question_type\": \"era_context\"}},\n      \
+          \  # Terminology / geographic (5)\n        {\"inputs\": {\"question\": \"\
+          What's the food poisoning rate in baseball?\"}, \"expectations\": {\"expected_keywords\"\
+          : [\"baseball\"], \"question_type\": \"terminology\"}},\n        {\"inputs\"\
+          : {\"question\": \"Show me the slugging percentage leaders for 2024\"},\
+          \ \"expectations\": {\"expected_keywords\": [\"slugging\", \"SLG\"], \"\
+          question_type\": \"terminology\"}},\n        {\"inputs\": {\"question\"\
+          : \"How did the Bronx Bombers do last year?\"}, \"expectations\": {\"expected_keywords\"\
+          : [\"Yankees\"], \"question_type\": \"terminology\"}},\n        {\"inputs\"\
+          : {\"question\": \"What's the WHIP for Clayton Kershaw in 2018?\"}, \"expectations\"\
+          : {\"expected_keywords\": [\"WHIP\", \"Kershaw\"], \"question_type\": \"\
+          terminology\"}},\n        {\"inputs\": {\"question\": \"Show home run stats\
+          \ for all California teams\"}, \"expectations\": {\"expected_keywords\"\
+          : [\"home runs\"], \"question_type\": \"geographic\"}},\n    ]\n\n    from\
+          \ datetime import datetime\n    run_ts = datetime.now().strftime(\"%Y%m%d_%H%M%S\"\
+          )\n    run_dataset_name = f\"{dataset_name}_{run_ts}\"\n\n    dataset =\
+          \ create_dataset(\n        name=run_dataset_name,\n        tags={\"stage\"\
+          : \"validation\", \"seeds\": str(len(test_cases)), \"agent\": \"mlb-data-agent\"\
+          },\n    )\n    dataset = dataset.merge_records(test_cases)\n    print(f\"\
+          Dataset: {run_dataset_name} | {len(test_cases)} seeds | ID: {dataset.dataset_id}\"\
+          , flush=True)\n\n    DatasetOutput = NamedTuple(\"DatasetOutput\", [(\"\
+          experiment_name\", str), (\"dataset_id\", str)])\n    return DatasetOutput(experiment_name=experiment_name,\
+          \ dataset_id=dataset.dataset_id)\n\n"
+        image: python:3.12-slim
+    exec-generate-variants-op:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - generate_variants_op
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'mlflow>=3.10'\
+          \ 'nest-asyncio>=1.6.0' 'pydantic>=2.0.0' 'httpx>=0.27.0' 'sdg-hub>=0.7.0,<1.0'\
+          \ 'pandas>=2.0' 'pyyaml>=6.0'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.16.1' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef generate_variants_op(\n    mlflow_tracking_uri: str,\n    experiment_name:\
+          \ str,\n    dataset_id: str,\n    llm_base_url: str,\n    gen_model: str,\n\
+          \    variants_per_seed: int = 3,\n    mlflow_workspace: str = \"\",\n) ->\
+          \ NamedTuple(\"GenOutput\", [(\"experiment_name\", str), (\"dataset_id\"\
+          , str)]):\n    \"\"\"Generate question variants from seeds using SDG Hub.\"\
+          \"\"\n    import os\n    import sys\n    import json\n    import tempfile\n\
+          \    from typing import NamedTuple\n    from pathlib import Path\n\n   \
+          \ os.environ[\"PYTHONUNBUFFERED\"] = \"1\"\n    sys.stdout.reconfigure(line_buffering=True)\n\
+          \    os.environ[\"MLFLOW_TRACKING_INSECURE_TLS\"] = \"true\"\n\n    if not\
+          \ os.environ.get(\"MLFLOW_TRACKING_TOKEN\"):\n        sa_token_path = Path(\"\
+          /var/run/secrets/kubernetes.io/serviceaccount/token\")\n        if sa_token_path.exists():\n\
+          \            os.environ[\"MLFLOW_TRACKING_TOKEN\"] = sa_token_path.read_text().strip()\n\
+          \n    import mlflow\n    from mlflow.genai.datasets import get_dataset\n\
+          \n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n    if mlflow_workspace:\n\
+          \        mlflow.set_workspace(mlflow_workspace)\n        import mlflow.tracking.fluent\
+          \ as _fluent\n        client = mlflow.MlflowClient()\n        exps = client.search_experiments(filter_string=f\"\
+          name = '{experiment_name}'\")\n        if exps:\n            _fluent._active_experiment_id\
+          \ = exps[0].experiment_id\n    else:\n        mlflow.set_experiment(experiment_name)\n\
+          \n    dataset = get_dataset(dataset_id=dataset_id)\n    df = dataset.to_df()\n\
+          \    seed_count = len(df)\n    print(f\"Dataset: {dataset.name} | {seed_count}\
+          \ seeds\", flush=True)\n\n    import pandas as pd\n    seeds = []\n    for\
+          \ _, row in df.iterrows():\n        inputs = row.get(\"inputs\", {})\n \
+          \       expectations = row.get(\"expectations\", {})\n        if isinstance(inputs,\
+          \ str):\n            inputs = json.loads(inputs)\n        if isinstance(expectations,\
+          \ str):\n            expectations = json.loads(expectations)\n        seeds.append({\n\
+          \            \"question\": inputs.get(\"question\", \"\"),\n           \
+          \ \"question_type\": expectations.get(\"question_type\", \"data_retrieval\"\
+          ),\n            \"expected_keywords\": json.dumps(expectations.get(\"expected_keywords\"\
+          , [])),\n        })\n    seed_df = pd.DataFrame(seeds)\n\n    gen_base =\
+          \ llm_base_url.rstrip(\"/\")\n    if not gen_base.endswith(\"/v1\"):\n \
+          \       gen_base = gen_base + \"/v1\"\n    api_key = os.environ.get(\"OPENAI_API_KEY\"\
+          , \"\")\n\n    all_variants = []\n\n    # Direct HTTP generation (simpler,\
+          \ no SDG Hub dependency issues)\n    import httpx\n    url = f\"{gen_base}/chat/completions\"\
+          \n    for seed in seeds:\n        prompt = (\n            f\"Generate {variants_per_seed}\
+          \ variant evaluation questions for an MLB baseball data agent.\\n\\n\"\n\
+          \            f\"Seed: {seed['question']}\\nType: {seed['question_type']}\\\
+          n\\n\"\n            f\"Change the player, team, year, or stat while keeping\
+          \ the same question type.\\n\"\n            f\"Available data: Lahman Database\
+          \ (1871-2025), Statcast pitches (2015-2019, 2024-2025), \"\n           \
+          \ f\"weather (1872-2019), live 2026 season, standings.\\n\\n\"\n       \
+          \     f'Respond with a JSON object containing a \"variants\" array. '\n\
+          \            f'Each variant needs: \"question\", \"question_type\", \"expected_keywords\"\
+          \ (array). No markdown.'\n        )\n        try:\n            r = httpx.post(url,\
+          \ json={\n                \"model\": gen_model,\n                \"messages\"\
+          : [{\"role\": \"user\", \"content\": prompt}],\n                \"temperature\"\
+          : 0.7, \"max_tokens\": 1024,\n            }, headers={\"Authorization\"\
+          : f\"Bearer {api_key}\", \"Content-Type\": \"application/json\"}, timeout=30)\n\
+          \            r.raise_for_status()\n            content = r.json()[\"choices\"\
+          ][0][\"message\"][\"content\"]\n            clean = content.strip()\n  \
+          \          if clean.startswith(\"```\"):\n                lines = clean.split(\"\
+          \\n\")\n                lines = [l for l in lines if not l.strip().startswith(\"\
+          ```\")]\n                clean = \"\\n\".join(lines)\n            parsed\
+          \ = json.loads(clean)\n            for v in parsed.get(\"variants\", [])[:variants_per_seed]:\n\
+          \                q = v.get(\"question\", \"\")\n                if q:\n\
+          \                    all_variants.append({\n                        \"inputs\"\
+          : {\"question\": q},\n                        \"expectations\": {\n    \
+          \                        \"expected_keywords\": v.get(\"expected_keywords\"\
+          , []),\n                            \"question_type\": v.get(\"question_type\"\
+          , seed[\"question_type\"]),\n                        },\n              \
+          \      })\n        except Exception as ex:\n            print(f\"  Error\
+          \ for '{seed['question'][:40]}': {ex}\", flush=True)\n    print(f\"Generated\
+          \ {len(all_variants)} variant questions\", flush=True)\n\n    if all_variants:\n\
+          \        dataset = dataset.merge_records(all_variants)\n        total =\
+          \ len(dataset.to_df())\n        print(f\"Dataset: {seed_count} seeds + {len(all_variants)}\
+          \ variants = {total} total\", flush=True)\n    else:\n        print(\"No\
+          \ variants generated, using seeds only\", flush=True)\n\n    GenOutput =\
+          \ NamedTuple(\"GenOutput\", [(\"experiment_name\", str), (\"dataset_id\"\
+          , str)])\n    return GenOutput(experiment_name=experiment_name, dataset_id=dataset.dataset_id)\n\
+          \n"
+        image: python:3.12-slim
+    exec-report-results-op:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - report_results_op
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pydantic>=2.0.0'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef report_results_op(metrics: dict, mlflow_tracking_uri: str) ->\
+          \ str:\n    \"\"\"Print evaluation scorecard.\"\"\"\n    print(\"=\" * 60)\n\
+          \    print(\"MLB DATA AGENT EVALUATION REPORT\")\n    print(\"=\" * 60)\n\
+          \    for k, v in sorted(metrics.items()):\n        if isinstance(v, float):\n\
+          \            print(f\"  {k}: {v:.2%}\")\n        else:\n            print(f\"\
+          \  {k}: {v}\")\n    print(f\"\\nView in MLflow: {mlflow_tracking_uri}\"\
+          )\n    return f\"Evaluation complete. {len(metrics)} metrics. View at {mlflow_tracking_uri}\"\
+          \n\n"
+        image: python:3.12-slim
+    exec-run-eval-op:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - run_eval_op
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'mlflow>=3.10'\
+          \ 'nest-asyncio>=1.6.0' 'pydantic>=2.0.0' 'httpx>=0.27.0' 'langchain>=0.3'\
+          \ 'langchain-openai>=0.3' 'langchain-core>=0.3' 'langgraph>=0.4' 'trino>=0.329'\
+          \ 'openai>=1.0'  &&  python3 -m pip install --quiet --no-warn-script-location\
+          \ 'kfp==2.16.1' '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"\
+          3.9\"' && \"$0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef run_eval_op(\n    mlflow_tracking_uri: str,\n    experiment_name:\
+          \ str,\n    dataset_id: str,\n    llm_base_url: str,\n    agent_model: str,\n\
+          \    judge_model: str,\n    trino_host: str = \"trino\",\n    trino_port:\
+          \ int = 8080,\n    mlflow_workspace: str = \"\",\n) -> dict:\n    \"\"\"\
+          Run MLB agent evaluation with 7 capability dimension scorers.\"\"\"\n  \
+          \  import os\n    import re\n    import sys\n    import json\n    import\
+          \ warnings\n    from pathlib import Path\n\n    os.environ[\"PYTHONUNBUFFERED\"\
+          ] = \"1\"\n    sys.stdout.reconfigure(line_buffering=True)\n    sys.stderr.reconfigure(line_buffering=True)\n\
+          \n    warnings.filterwarnings(\"ignore\")\n    os.environ[\"MLFLOW_TRACKING_INSECURE_TLS\"\
+          ] = \"true\"\n    os.environ[\"MLFLOW_GENAI_EVAL_MAX_WORKERS\"] = \"2\"\n\
+          \    os.environ[\"MLFLOW_GENAI_EVAL_MAX_SCORER_WORKERS\"] = \"2\"\n    os.environ[\"\
+          MLFLOW_GENAI_EVAL_MAX_RETRIES\"] = \"3\"\n    os.environ[\"MLFLOW_GENAI_EVAL_SKIP_TRACE_VALIDATION\"\
+          ] = \"True\"\n    os.environ[\"TRINO_QUERY_HOST\"] = trino_host\n    os.environ[\"\
+          TRINO_QUERY_PORT\"] = str(trino_port)\n    judge_base = llm_base_url.rstrip(\"\
+          /\")\n    judge_chat_url = judge_base + \"/chat/completions\"\n\n    if\
+          \ not os.environ.get(\"MLFLOW_TRACKING_TOKEN\"):\n        sa_token_path\
+          \ = Path(\"/var/run/secrets/kubernetes.io/serviceaccount/token\")\n    \
+          \    if sa_token_path.exists():\n            os.environ[\"MLFLOW_TRACKING_TOKEN\"\
+          ] = sa_token_path.read_text().strip()\n\n    try:\n        import nest_asyncio\n\
+          \        nest_asyncio.apply()\n    except ImportError:\n        pass\n\n\
+          \    import mlflow\n    from mlflow.genai.scorers import scorer\n    from\
+          \ mlflow.genai.datasets import get_dataset\n\n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n\
+          \    if mlflow_workspace:\n        mlflow.set_workspace(mlflow_workspace)\n\
+          \        import mlflow.tracking.fluent as _fluent\n        client = mlflow.MlflowClient()\n\
+          \        exps = client.search_experiments(filter_string=f\"name = '{experiment_name}'\"\
+          )\n        if exps:\n            _fluent._active_experiment_id = exps[0].experiment_id\n\
+          \    else:\n        mlflow.set_experiment(experiment_name)\n\n    # \u2500\
+          \u2500 Deterministic scorers \u2500\u2500\n    @scorer\n    def contains_expected(inputs:\
+          \ dict, outputs: str, expectations: dict) -> bool:\n        keywords = expectations.get(\"\
+          expected_keywords\", [])\n        if not keywords:\n            return True\n\
+          \        out = str(outputs).lower()\n        return any(kw.lower() in out\
+          \ for kw in keywords)\n\n    @scorer\n    def no_forbidden_content(inputs:\
+          \ dict, outputs: str, expectations: dict) -> bool:\n        forbidden =\
+          \ expectations.get(\"forbidden_content\", [])\n        if not forbidden:\n\
+          \            return True\n        out = str(outputs).lower()\n        return\
+          \ not any(f.lower() in out for f in forbidden)\n\n    @scorer\n    def confidence_card_present(outputs:\
+          \ str) -> bool:\n        return \"data confidence\" in str(outputs).lower()\n\
+          \n    @scorer\n    def response_adequate_length(outputs: str) -> float:\n\
+          \        return 1.0 if len(str(outputs)) >= 100 else 0.5\n\n    # \u2500\
+          \u2500 LLM-as-Judge scorers \u2500\u2500\n    import httpx\n    api_key\
+          \ = os.environ.get(\"OPENAI_API_KEY\", \"\")\n    print(f\"Judge: {judge_model}\
+          \ via {judge_chat_url}\", flush=True)\n\n    def _call_judge(question: str,\
+          \ response: str, criterion: str) -> bool:\n        prompt = (\n        \
+          \    f\"Question: {question}\\nResponse: {response}\\n\\n\"\n          \
+          \  f\"{criterion}\\n\\nReply with only YES or NO.\"\n        )\n       \
+          \ try:\n            r = httpx.post(judge_chat_url, json={\n            \
+          \    \"model\": judge_model,\n                \"messages\": [{\"role\":\
+          \ \"user\", \"content\": prompt}],\n                \"max_tokens\": 10,\
+          \ \"temperature\": 0,\n            }, headers={\"Authorization\": f\"Bearer\
+          \ {api_key}\", \"Content-Type\": \"application/json\"}, timeout=30)\n  \
+          \          r.raise_for_status()\n            return r.json()[\"choices\"\
+          ][0][\"message\"][\"content\"].strip().upper().startswith(\"YES\")\n   \
+          \     except Exception as e:\n            print(f\"  Judge error: {e}\"\
+          , flush=True)\n            return False\n\n    @scorer\n    def cross_dataset_reasoning(inputs:\
+          \ dict, outputs: str) -> bool:\n        return _call_judge(str(inputs),\
+          \ str(outputs),\n            \"Does the response state which dataset or\
+          \ table was used and why?\")\n\n    @scorer\n    def methodology_awareness(inputs:\
+          \ dict, outputs: str) -> bool:\n        return _call_judge(str(inputs),\
+          \ str(outputs),\n            \"Does the response describe era context, data\
+          \ collection methodology, \"\n            \"or note relevant rule changes\
+          \ when applicable?\")\n\n    @scorer\n    def scope_adherence(inputs: dict,\
+          \ outputs: str) -> bool:\n        return _call_judge(str(inputs), str(outputs),\n\
+          \            \"Does the response stay within the scope of available data\
+          \ \"\n            \"and avoid fabricating statistics not in the database?\"\
+          )\n\n    @scorer\n    def causal_inference_boundaries(inputs: dict, outputs:\
+          \ str) -> bool:\n        return _call_judge(str(inputs), str(outputs),\n\
+          \            \"Does the response correctly avoid causal claims from \"\n\
+          \            \"statistical/observational data?\")\n\n    @scorer\n    def\
+          \ geographic_resolution(inputs: dict, outputs: str) -> bool:\n        return\
+          \ _call_judge(str(inputs), str(outputs),\n            \"Does the response\
+          \ correctly handle geographic scope \"\n            \"(team/park/city level)\
+          \ and identify relevant teams when asked?\")\n\n    @scorer\n    def terminology_fluency(inputs:\
+          \ dict, outputs: str) -> bool:\n        return _call_judge(str(inputs),\
+          \ str(outputs),\n            \"Are baseball terms correctly mapped to database\
+          \ columns \"\n            \"(e.g., AVG=H/AB, WHIP=(BB+H)*3/IPouts, team\
+          \ nicknames to IDs)?\")\n\n    @scorer\n    def confidence_calibration(inputs:\
+          \ dict, outputs: str) -> bool:\n        return _call_judge(str(inputs),\
+          \ str(outputs),\n            \"Does the response include a Data Confidence\
+          \ level \"\n            \"(HIGH/MODERATE/LOW) that reflects what data was\
+          \ actually retrieved?\")\n\n    capability_scorers = [\n        cross_dataset_reasoning,\
+          \ methodology_awareness, scope_adherence,\n        causal_inference_boundaries,\
+          \ geographic_resolution,\n        terminology_fluency, confidence_calibration,\n\
+          \    ]\n\n    all_scorers = [\n        contains_expected, no_forbidden_content,\n\
+          \        confidence_card_present, response_adequate_length,\n    ] + capability_scorers\n\
+          \n    # \u2500\u2500 Predictor \u2500\u2500\n    from langchain_openai import\
+          \ ChatOpenAI\n    from langgraph.prebuilt import create_react_agent\n  \
+          \  from langchain_core.messages import HumanMessage\n    from langchain_core.tools\
+          \ import tool\n    from trino.dbapi import connect as trino_connect\n\n\
+          \    BLOCKED_SQL = re.compile(r\"\\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE)\\\
+          b\", re.IGNORECASE)\n\n    @tool\n    def query_trino(sql: str) -> str:\n\
+          \        \"\"\"Execute a read-only SQL query against the MLB Iceberg lakehouse.\n\
+          \        Schema: lakehouse.mlb. Tables: batting, pitching, fielding, people,\
+          \ teams, parks,\n        series_post, awards_players, hall_of_fame, salaries,\
+          \ home_games, weather_stations,\n        weather_daily, pitch_pitches, pitch_atbats,\
+          \ pitch_games, statcast_pitches,\n        live_games, live_boxscore_batting,\
+          \ live_boxscore_pitching, live_plays,\n        live_pitches, live_standings.\
+          \ Only SELECT allowed.\"\"\"\n        if BLOCKED_SQL.search(sql):\n    \
+          \        return json.dumps({\"error\": \"Only SELECT queries allowed.\"\
+          })\n        try:\n            conn = trino_connect(host=trino_host, port=trino_port,\
+          \ user=\"admin\", catalog=\"lakehouse\", schema=\"mlb\")\n            cur\
+          \ = conn.cursor()\n            cur.execute(sql)\n            columns = [d[0]\
+          \ for d in cur.description] if cur.description else []\n            rows\
+          \ = cur.fetchmany(500)\n            conn.close()\n            return json.dumps({\"\
+          results\": [dict(zip(columns, r)) for r in rows], \"row_count\": len(rows)})\n\
+          \        except Exception as e:\n            return json.dumps({\"error\"\
+          : str(e)})\n\n    @tool\n    def describe_datasets(topic: str = \"\") ->\
+          \ str:\n        \"\"\"List available MLB datasets.\"\"\"\n        return\
+          \ json.dumps({\"datasets\": [\n            {\"name\": \"batting/pitching/fielding\"\
+          , \"years\": \"1871-2025\"},\n            {\"name\": \"pitch_pitches (Statcast)\"\
+          , \"years\": \"2015-2019\"},\n            {\"name\": \"statcast_pitches\"\
+          , \"years\": \"2024-2025 postseason\"},\n            {\"name\": \"live_*\
+          \ (2026 season)\", \"years\": \"2026\"},\n            {\"name\": \"weather_daily\"\
+          , \"years\": \"~1872-2019\"},\n            {\"name\": \"salaries\", \"years\"\
+          : \"1985-2016\"},\n        ]})\n\n    @tool\n    def get_methodology(dataset_name:\
+          \ str) -> str:\n        \"\"\"Get methodology for a specific MLB dataset.\"\
+          \"\"\n        return json.dumps({\"data_type\": \"Official MLB records\"\
+          , \"collection\": \"Box scores and Statcast tracking\"})\n\n    agent_base_url\
+          \ = llm_base_url.replace(f\"/{judge_model}\", f\"/{agent_model}\")\n   \
+          \ if not agent_base_url.endswith(\"/v1\"):\n        agent_base_url = agent_base_url\
+          \ + \"/v1\"\n    print(f\"Agent: {agent_model} via {agent_base_url}\", flush=True)\n\
+          \n    agent_llm = ChatOpenAI(\n        model=agent_model, base_url=agent_base_url,\n\
+          \        api_key=os.environ.get(\"OPENAI_API_KEY\", \"x\"),\n        temperature=0.3,\
+          \ max_tokens=4096, streaming=False,\n        model_kwargs={\"extra_body\"\
+          : {\"chat_template_kwargs\": {\"enable_thinking\": False}}},\n    )\n\n\
+          \    prompt_name = \"mlb-agent.system\"\n    system_prompt = None\n    prompt_version\
+          \ = \"unknown\"\n    try:\n        prompt_obj = mlflow.genai.load_prompt(\n\
+          \            f\"prompts:/{prompt_name}@production\", allow_missing=True,\n\
+          \        )\n        if prompt_obj:\n            system_prompt = prompt_obj.template\n\
+          \            prompt_version = str(prompt_obj.version)\n            print(f\"\
+          Loaded prompt: {prompt_name} v{prompt_version} ({len(system_prompt)} chars)\"\
+          , flush=True)\n            mlflow.log_param(\"prompt_name\", prompt_name)\n\
+          \            mlflow.log_param(\"prompt_version\", prompt_version)\n    except\
+          \ Exception as e:\n        print(f\"Could not load prompt from MLflow: {e}\"\
+          , flush=True)\n\n    if not system_prompt:\n        print(\"Using fallback\
+          \ prompt\", flush=True)\n        system_prompt = (\n            \"You are\
+          \ a Major League Baseball data agent. \"\n            \"Use query_trino\
+          \ to execute SQL against the MLB Iceberg lakehouse (lakehouse.mlb). \"\n\
+          \            \"Always include Data Confidence (HIGH/MODERATE/LOW) and Data\
+          \ Freshness.\"\n        )\n\n    agent = create_react_agent(\n        model=agent_llm,\n\
+          \        tools=[query_trino, describe_datasets, get_methodology],\n    \
+          \    prompt=system_prompt,\n    )\n\n    _q_count = [0]\n\n    def predict_fn(question:\
+          \ str) -> str:\n        _q_count[0] += 1\n        print(f\"[predict {_q_count[0]}]\
+          \ Q: {question[:80]}...\", flush=True)\n        try:\n            with mlflow.start_span(name=\"\
+          mlb_agent_eval\") as span:\n                span.set_inputs({\"question\"\
+          : question[:200]})\n                mlflow.genai.load_prompt(\n        \
+          \            f\"prompts:/{prompt_name}@production\",\n                 \
+          \   allow_missing=True, cache_ttl_seconds=300,\n                )\n    \
+          \            result = agent.invoke({\"messages\": [HumanMessage(content=question)]})\n\
+          \                for m in reversed(result.get(\"messages\", [])):\n    \
+          \                if hasattr(m, \"type\") and m.type == \"ai\" and not getattr(m,\
+          \ \"tool_calls\", None):\n                        answer = m.content or\
+          \ \"\"\n                        span.set_outputs({\"answer_length\": len(answer)})\n\
+          \                        print(f\"[predict {_q_count[0]}] A: {len(answer)}\
+          \ chars\", flush=True)\n                        return answer\n        \
+          \    return \"No response\"\n        except Exception as e:\n          \
+          \  print(f\"[predict {_q_count[0]}] Error: {e}\", flush=True)\n        \
+          \    return f\"Error: {e}\"\n\n    # \u2500\u2500 Run evaluation \u2500\u2500\
+          \n    dataset = get_dataset(dataset_id=dataset_id)\n    print(f\"Dataset:\
+          \ {dataset.name} | Records: {len(dataset.to_df())}\", flush=True)\n    print(f\"\
+          Scorers: {len(all_scorers)} (4 deterministic + {len(capability_scorers)}\
+          \ LLM judges)\", flush=True)\n\n    print(\"Starting mlflow.genai.evaluate()...\"\
+          , flush=True)\n    result = mlflow.genai.evaluate(\n        data=dataset,\n\
+          \        predict_fn=predict_fn,\n        scorers=all_scorers,\n    )\n \
+          \   print(\"Evaluation complete.\", flush=True)\n\n    metrics = {}\n  \
+          \  if hasattr(result, \"metrics\") and result.metrics:\n        for k, v\
+          \ in result.metrics.items():\n            metrics[k] = round(v, 4) if isinstance(v,\
+          \ float) else v\n\n    print(f\"\\nResults: {metrics}\")\n    return metrics\n\
+          \n"
+        image: python:3.12-slim
+    exec-setup-mlflow-op:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - setup_mlflow_op
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'mlflow>=3.10'\
+          \ 'nest-asyncio>=1.6.0' 'pydantic>=2.0.0' 'httpx>=0.27.0'  &&  python3 -m\
+          \ pip install --quiet --no-warn-script-location 'kfp==2.16.1' '--no-deps'\
+          \ 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\
+          \n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef setup_mlflow_op(\n    mlflow_tracking_uri: str,\n    mlflow_experiment_name:\
+          \ str,\n    mlflow_workspace: str = \"\",\n) -> str:\n    \"\"\"Configure\
+          \ MLflow tracking and return experiment name.\"\"\"\n    import os\n   \
+          \ from pathlib import Path\n    import mlflow\n\n    os.environ[\"MLFLOW_TRACKING_INSECURE_TLS\"\
+          ] = \"true\"\n\n    if not os.environ.get(\"MLFLOW_TRACKING_TOKEN\"):\n\
+          \        sa_token_path = Path(\"/var/run/secrets/kubernetes.io/serviceaccount/token\"\
+          )\n        if sa_token_path.exists():\n            os.environ[\"MLFLOW_TRACKING_TOKEN\"\
+          ] = sa_token_path.read_text().strip()\n\n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n\
+          \n    if mlflow_workspace:\n        mlflow.set_workspace(mlflow_workspace)\n\
+          \n    experiment_name = mlflow_experiment_name\n    if not experiment_name.endswith(\"\
+          -eval\"):\n        experiment_name = f\"{experiment_name}-eval\"\n\n   \
+          \ if mlflow_workspace:\n        import mlflow.tracking.fluent as _fluent\n\
+          \        client = mlflow.MlflowClient()\n        exps = client.search_experiments(filter_string=f\"\
+          name = '{experiment_name}'\")\n        if exps:\n            _fluent._active_experiment_id\
+          \ = exps[0].experiment_id\n        else:\n            _fluent._active_experiment_id\
+          \ = client.create_experiment(experiment_name)\n    else:\n        mlflow.set_experiment(experiment_name)\n\
+          \n    print(f\"MLflow: {mlflow_tracking_uri} | Experiment: {experiment_name}\"\
+          )\n    return experiment_name\n\n"
+        image: python:3.12-slim
+pipelineInfo:
+  description: Evaluate MLB agent on 7 capability dimensions using LLM-as-judge
+  name: mlb-data-agent-evaluation
+root:
+  dag:
+    tasks:
+      create-dataset-op:
+        cachingOptions: {}
+        componentRef:
+          name: comp-create-dataset-op
+        dependentTasks:
+        - setup-mlflow-op
+        inputs:
+          parameters:
+            dataset_name:
+              componentInputParameter: dataset_name
+            experiment_name:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: setup-mlflow-op
+            mlflow_tracking_uri:
+              componentInputParameter: mlflow_tracking_uri
+            mlflow_workspace:
+              componentInputParameter: mlflow_workspace
+        taskInfo:
+          name: create-dataset-op
+      generate-variants-op:
+        cachingOptions: {}
+        componentRef:
+          name: comp-generate-variants-op
+        dependentTasks:
+        - create-dataset-op
+        inputs:
+          parameters:
+            dataset_id:
+              taskOutputParameter:
+                outputParameterKey: dataset_id
+                producerTask: create-dataset-op
+            experiment_name:
+              taskOutputParameter:
+                outputParameterKey: experiment_name
+                producerTask: create-dataset-op
+            gen_model:
+              componentInputParameter: judge_model
+            llm_base_url:
+              componentInputParameter: llm_base_url
+            mlflow_tracking_uri:
+              componentInputParameter: mlflow_tracking_uri
+            mlflow_workspace:
+              componentInputParameter: mlflow_workspace
+            variants_per_seed:
+              runtimeValue:
+                constant: 3.0
+        taskInfo:
+          name: generate-variants-op
+      report-results-op:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-report-results-op
+        dependentTasks:
+        - run-eval-op
+        inputs:
+          parameters:
+            metrics:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: run-eval-op
+            mlflow_tracking_uri:
+              componentInputParameter: mlflow_tracking_uri
+        taskInfo:
+          name: report-results-op
+      run-eval-op:
+        cachingOptions: {}
+        componentRef:
+          name: comp-run-eval-op
+        dependentTasks:
+        - generate-variants-op
+        inputs:
+          parameters:
+            agent_model:
+              componentInputParameter: agent_model
+            dataset_id:
+              taskOutputParameter:
+                outputParameterKey: dataset_id
+                producerTask: generate-variants-op
+            experiment_name:
+              taskOutputParameter:
+                outputParameterKey: experiment_name
+                producerTask: generate-variants-op
+            judge_model:
+              componentInputParameter: judge_model
+            llm_base_url:
+              componentInputParameter: llm_base_url
+            mlflow_tracking_uri:
+              componentInputParameter: mlflow_tracking_uri
+            mlflow_workspace:
+              componentInputParameter: mlflow_workspace
+            trino_host:
+              componentInputParameter: trino_host
+            trino_port:
+              componentInputParameter: trino_port
+        taskInfo:
+          name: run-eval-op
+      setup-mlflow-op:
+        cachingOptions: {}
+        componentRef:
+          name: comp-setup-mlflow-op
+        inputs:
+          parameters:
+            mlflow_experiment_name:
+              componentInputParameter: mlflow_experiment_name
+            mlflow_tracking_uri:
+              componentInputParameter: mlflow_tracking_uri
+            mlflow_workspace:
+              componentInputParameter: mlflow_workspace
+        taskInfo:
+          name: setup-mlflow-op
+  inputDefinitions:
+    parameters:
+      agent_model:
+        defaultValue: qwen36-27b
+        isOptional: true
+        parameterType: STRING
+      dataset_name:
+        defaultValue: mlb_data_eval
+        isOptional: true
+        parameterType: STRING
+      judge_model:
+        defaultValue: gemma4
+        isOptional: true
+        parameterType: STRING
+      llm_base_url:
+        defaultValue: http://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/gemma4/v1
+        isOptional: true
+        parameterType: STRING
+      llm_secret_name:
+        defaultValue: mlb-agent-maas-key
+        isOptional: true
+        parameterType: STRING
+      mlflow_experiment_name:
+        defaultValue: mlb-data-agent
+        isOptional: true
+        parameterType: STRING
+      mlflow_tracking_uri:
+        defaultValue: https://mlflow.redhat-ods-applications.svc:8443/mlflow
+        isOptional: true
+        parameterType: STRING
+      mlflow_workspace:
+        defaultValue: mlb-agent
+        isOptional: true
+        parameterType: STRING
+      trino_host:
+        defaultValue: trino.mlb-agent.svc.cluster.local
+        isOptional: true
+        parameterType: STRING
+      trino_port:
+        defaultValue: 8080.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.1
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-generate-variants-op:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: OPENAI_API_KEY
+              secretKey: api-key
+            optional: false
+            secretNameParameter:
+              componentInputParameter: llm_secret_name
+        exec-run-eval-op:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: OPENAI_API_KEY
+              secretKey: api-key
+            optional: false
+            secretNameParameter:
+              componentInputParameter: llm_secret_name

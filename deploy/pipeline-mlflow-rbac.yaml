@@ -1,0 +1,18 @@
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: pipeline-mlflow
+  labels:
+    app.kubernetes.io/name: mlb-eval-pipeline
+    app.kubernetes.io/component: mlflow-integration
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: mlflow-operator-mlflow-integration
+subjects:
+  - kind: ServiceAccount
+    name: pipeline-runner-dspa
+  - kind: ServiceAccount
+    name: ds-pipeline-dspa
+  - kind: ServiceAccount
+    name: pipeline

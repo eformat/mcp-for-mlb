@@ -115,6 +115,7 @@ kill $SPICEDB_PF_PID 2>/dev/null || true
 # ── 7. Deploy RBAC ────────────────────────────────────────────
 echo "==> 7. Deploying RBAC"
 oc apply -f "${REPO_DIR}/deploy/mlflow-rbac.yaml" -n "${NAMESPACE}"
+oc apply -f "${REPO_DIR}/deploy/pipeline-mlflow-rbac.yaml" -n "${NAMESPACE}" 2>/dev/null || true
 
 # ── 8. Deploy MCP server ─────────────────────────────────────
 echo "==> 8. Deploying MCP server"
@@ -126,7 +127,16 @@ echo "==> 9. Deploying agent"
 oc apply -k "${REPO_DIR}/agents/mlb-agent/deploy" -n "${NAMESPACE}"
 oc rollout status deployment/mlb-agent -n "${NAMESPACE}" --timeout=120s
 
-# ── 10. Summary ───────────────────────────────────────────────
+# ── 10. Deploy pipeline server (DSPA) ─────────────────────────
+echo "==> 10. Deploying pipeline server"
+oc apply -f "${REPO_DIR}/deploy/pipeline-s3-secret.yaml" -n "${NAMESPACE}"
+oc apply -f "${REPO_DIR}/deploy/dspa.yaml" -n "${NAMESPACE}"
+echo "Waiting for DSPA..."
+sleep 30
+oc rollout status deployment/ds-pipeline-dspa -n "${NAMESPACE}" --timeout=120s
+"${REPO_DIR}/scripts/fix-dspa-charset.sh"
+
+# ── 11. Summary ───────────────────────────────────────────────
 echo ""
 echo "============================================"
 echo "  Deployment Complete"

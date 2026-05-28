@@ -3,3 +3,4 @@
 .claude/
 .files/
 venv/
+.venv/

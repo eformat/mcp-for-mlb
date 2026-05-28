@@ -64,6 +64,12 @@ def query_trino(sql: str) -> str:
     - pitch_games (g_id, date, home_team, away_team, venue_name, weather, wind, attendance) — 12K games
     - pitch_player_names (id, first_name, last_name) — player ID lookup
     - statcast_pitches (game_pk, pitcher, batter, player_name, pitch_type, pitch_name, release_speed, release_spin_rate, launch_speed, launch_angle, bat_speed) — 27K pitches 2024-2025 postseason
+    - live_games (game_pk, game_date, away/home_team_name, away/home_score, venue_name, weather_condition) — 2026 season
+    - live_boxscore_batting (game_pk, player_id, player_name, team_name, hits, home_runs, rbi, avg, ops) — per-game batting
+    - live_boxscore_pitching (game_pk, player_id, player_name, innings_pitched, strikeouts, era, whip) — per-game pitching
+    - live_plays (game_pk, batter_name, pitcher_name, event, event_type, rbi, is_scoring_play) — play-by-play
+    - live_pitches (game_pk, pitch_type, start_speed, spin_rate, plate_x, plate_z, is_strike) — 2026 pitches
+    - live_standings (team_name, wins, losses, winning_pct, games_back, division_name, streak) — current standings
 
     Computed stats (not stored):
     - AVG = CAST(H AS DOUBLE)/NULLIF(AB,0)
@@ -126,6 +132,7 @@ def describe_datasets(topic: str = "") -> str:
         "parks": {"tables": ["parks", "home_games"], "years": "1871-2025", "notes": "346 ballparks with attendance data."},
         "salaries": {"tables": ["salaries"], "years": "1985-2016", "notes": "Annual salary in USD. Data ends 2016."},
         "pitch": {"tables": ["pitch_pitches", "pitch_atbats", "pitch_games", "pitch_player_names", "statcast_pitches"], "years": "2015-2019, 2024-2025 postseason", "notes": "Pitch-level: velocity, spin, movement, location. Join via ab_id/g_id."},
+        "live": {"tables": ["live_games", "live_boxscore_batting", "live_boxscore_pitching", "live_plays", "live_pitches", "live_standings"], "years": "2026 (current season)", "notes": "Current season scores, box scores, plays, pitches, standings. Join on game_pk."},
     }
     topic_lower = topic.strip().lower() if topic else "all"
     resolved = _DATASET_ALIASES.get(topic_lower, topic_lower)
@@ -160,6 +167,7 @@ def get_methodology(dataset_name: str) -> str:
         "parks": "346 ballparks 1871-present. Park factors (BPF/PPF) in teams table.",
         "postseason": "All playoff/WS data. Format expanded over time. Small sample sizes.",
         "pitch": "Statcast pitch-by-pitch data. 2015-2019 regular+post (3.6M pitches), 2024-2025 postseason only (27K). Velocity, spin, movement, location. No data 2020-2023.",
+        "live": "2026 MLB season from Stats API. Game scores, boxscore batting/pitching, play-by-play, pitch-level Statcast, standings. Refreshed periodically.",
     }
     if resolved not in methodologies:
         return json.dumps({"error": f"Unknown dataset '{dataset_name}'. Available: {', '.join(sorted(methodologies.keys()))}"})

@@ -218,6 +218,10 @@ async def starters():
         cl.Starter(label="Pitch type breakdown", message="What percentage of pitches were fastballs vs breaking balls vs offspeed in 2018?"),
         cl.Starter(label="Highest spin rate", message="Which pitchers had the highest average spin rate on curveballs in the 2024 postseason?"),
         cl.Starter(label="Strikeout pitch types", message="Which pitch types generate the most swinging strikes?"),
+        cl.Starter(label="Yesterday's scores", message="What were yesterday's MLB game scores?"),
+        cl.Starter(label="Current standings", message="Show the current MLB standings by division"),
+        cl.Starter(label="2026 HR leaders", message="Who has the most home runs in the 2026 season so far?"),
+        cl.Starter(label="2026 ERA leaders", message="Which starting pitchers have the best ERA this season?"),
     ]
 
 

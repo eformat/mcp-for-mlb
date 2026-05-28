@@ -77,6 +77,19 @@ _DATASET_ALIASES = {
     "slider": "pitch",
     "curveball": "pitch",
     "changeup": "pitch",
+    "live": "live",
+    "2026": "live",
+    "2026 season": "live",
+    "current season": "live",
+    "this season": "live",
+    "today": "live",
+    "yesterday": "live",
+    "recent": "live",
+    "scores": "live",
+    "standings": "live",
+    "boxscore": "live",
+    "box score": "live",
+    "current": "live",
 }
 
 _METHODOLOGY = {
@@ -358,6 +371,36 @@ _METHODOLOGY = {
         "temporal_resolution": "Per-series and per-game aggregates",
         "update_frequency": "Annually",
     },
+    "live": {
+        "collection_design": (
+            "Current 2026 MLB season data fetched from the MLB Stats API "
+            "(statsapi.mlb.com). Includes game scores, boxscore batting/pitching "
+            "stats, play-by-play, pitch-by-pitch Statcast data, and standings. "
+            "Refreshed periodically via ingestion script."
+        ),
+        "data_scope": (
+            "2026 regular season completed games. Tables: live_games (764 games), "
+            "live_boxscore_batting (per-game player batting), live_boxscore_pitching "
+            "(per-game player pitching), live_plays (at-bat results), live_pitches "
+            "(individual pitches with velocity/spin/movement), live_standings (current)."
+        ),
+        "key_columns": (
+            "live_games: game_pk, game_date, away/home_team_name, away/home_score, venue_name, weather; "
+            "live_boxscore_batting: game_pk, player_id, player_name, hits, home_runs, rbi, avg, ops; "
+            "live_boxscore_pitching: game_pk, player_id, innings_pitched, strikeouts, era; "
+            "live_plays: game_pk, batter_name, pitcher_name, event, event_type, rbi; "
+            "live_pitches: game_pk, pitch_type, start_speed, spin_rate, plate_x, plate_z; "
+            "live_standings: team_name, wins, losses, division_name, games_back, streak"
+        ),
+        "known_biases": [
+            "Data is only as fresh as the last ingestion run — may not include today's games",
+            "Postponed games appear with future makeup dates and NULL scores",
+            "Some boxscore stats (avg, obp, slg, ops) are season cumulative strings, not per-game",
+        ],
+        "geographic_resolution": "Team/venue level",
+        "temporal_resolution": "Per-game, per-play, per-pitch",
+        "update_frequency": "Refreshed on demand (make load-live)",
+    },
 }
 
 
@@ -424,6 +467,13 @@ def _resolve_dataset(query: str) -> str | None:
     "    Columns: id, first_name, last_name\n"
     "34. statcast_pitches — modern Statcast 2024-2025 postseason (27K rows, 94 columns)\n"
     "    Key columns: game_pk, pitcher, batter, player_name, pitch_type, pitch_name, release_speed, release_spin_rate, pfx_x, pfx_z, plate_x, plate_z, launch_speed, launch_angle, bat_speed, swing_length, events, description\n\n"
+    "LIVE 2026 SEASON TABLES (from MLB Stats API):\n"
+    "35. live_games — 2026 completed games (game_pk, game_date, away/home_team_name, away/home_score, venue_name, weather_condition, weather_temp)\n"
+    "36. live_boxscore_batting — per-game batting (game_pk, player_id, player_name, team_name, at_bats, hits, home_runs, rbi, walks, strikeouts, avg, obp, slg, ops)\n"
+    "37. live_boxscore_pitching — per-game pitching (game_pk, player_id, player_name, innings_pitched, strikeouts, earned_runs, era, whip, pitch_count)\n"
+    "38. live_plays — play-by-play (game_pk, at_bat_index, inning, batter_name, pitcher_name, event, event_type, rbi, is_scoring_play)\n"
+    "39. live_pitches — individual pitches 2026 (game_pk, pitch_type, pitch_description, start_speed, spin_rate, plate_x, plate_z, pfx_x, pfx_z, is_strike, is_ball, is_in_play)\n"
+    "40. live_standings — current standings (team_name, wins, losses, winning_pct, games_back, division_name, streak, run_differential)\n\n"
     "KEY JOIN PATTERNS:\n"
     "- Player stats with names: JOIN people ON batting.playerID = people.playerID\n"
     "- Team franchise names: JOIN teams_franchises ON teams.franchID = teams_franchises.franchID\n"
@@ -639,6 +689,17 @@ async def describe_datasets(topic: str = "") -> dict:
                 "Join: pitch_pitches.ab_id → pitch_atbats.ab_id → pitch_games.g_id",
             ],
             "join_with": "pitch_player_names (for names), pitch_atbats (for batter/pitcher/event), pitch_games (for venue/weather)",
+        },
+        "live": {
+            "tables": ["live_games", "live_boxscore_batting", "live_boxscore_pitching", "live_plays", "live_pitches", "live_standings"],
+            "years_available": "2026 season (current)",
+            "key_features": [
+                "Current 2026 season game results, box scores, play-by-play, pitch data, standings",
+                "game_pk is the primary key linking all live tables",
+                "Standings show current W-L records, division rank, streak",
+                "Pitches include Statcast velocity, spin rate, movement data",
+            ],
+            "join_with": "All live tables join on game_pk. Player names embedded in each table.",
         },
     }
 

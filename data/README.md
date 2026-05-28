@@ -6,8 +6,11 @@ Data loaded via Parquet pipeline:
   - 27 baseball tables: 706,466 rows in 212s
   - 2 weather tables: 10,629,675 rows in 49s
   - Total: 11.3M rows in the lakehouse.mlb schema
+  - 3.65M pitch records with spin rate, velocity, movement, and batted ball data
 
-major league baseball
+## sources
+
+### major league baseball
 
 - https://sabr.org/lahman-database/
 
@@ -21,7 +24,7 @@ AwardsShareManagers.csv  FieldingOF.csv       ManagersHalf.csv	Salaries.csv
 AwardsSharePlayers.csv	 FieldingOFsplit.csv  Parks.csv		Schools.csv
 ```
 
-weather
+### weather
 
 - https://kilthub.cmu.edu/articles/dataset/Compiled_daily_temperature_and_precipitation_data_for_the_U_S_cities/7890488
 
@@ -60,7 +63,7 @@ USW00004853.csv  USW00013889.csv  USW00014768.csv  USW00014939.csv  USW00024127.
 USW00012815.csv  USW00013893.csv  USW00014778.csv  USW00014941.csv  USW00024128.csv  USW00093842.csv
 ```
 
-pitch stats
+### pitch stats
 
 MLB Pitch Data 2015-2018
 
@@ -91,3 +94,11 @@ pitch/
 └── 2025
     └── Data_MLB_2025_StatcastPostseason_PitchByPitch_20251102a.csv
 ```
+
+### live
+
+2026 live data: ~195K rows for a full season-to-date snapshot. Grows ~3.5K rows/day during season.
+
+- curl "https://statsapi.mlb.com/api/v1.1/game/824750/feed/live" | jq .
+- curl "https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=2026-05-27" | jq .
+- curl "https://statsapi.mlb.com/api/v1.1/game/824750/feed/live" | jq .

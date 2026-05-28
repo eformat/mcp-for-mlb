@@ -85,6 +85,12 @@ TRINO_HOST=localhost TRINO_PORT=8090 \
   DATA_DIR="${REPO_DIR}/data/pitch" \
   python3 "${REPO_DIR}/scripts/load-pitch-trino.py"
 
+echo "Loading live 2026 season data..."
+TRINO_HOST=localhost TRINO_PORT=8090 \
+  MINIO_ENDPOINT=localhost:9001 \
+  CACHE_DIR="${REPO_DIR}/data/live" \
+  python3 "${REPO_DIR}/scripts/load-live-trino.py"
+
 kill $PF_PID 2>/dev/null || true
 
 # ── 5. Create secrets ─────────────────────────────────────────

@@ -38,6 +38,9 @@ DATASETS = [
     # Pitch-by-pitch tables
     "pitch_pitches", "pitch_atbats", "pitch_games",
     "pitch_player_names", "statcast_pitches", "pitch",
+    # Live 2026 season tables
+    "live_games", "live_boxscore_batting", "live_boxscore_pitching",
+    "live_plays", "live_pitches", "live_standings", "live",
 ]
 
 SEED_RELATIONSHIPS = []

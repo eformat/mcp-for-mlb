@@ -62,6 +62,17 @@ Execute read-only SQL against the `lakehouse.mlb` schema. Only SELECT allowed.
 | `pitch_player_names` | id, first_name, last_name | Player ID to name lookup (2.2K rows) |
 | `statcast_pitches` | game_pk, pitcher, batter, player_name, pitch_type, pitch_name, release_speed, release_spin_rate, pfx_x, pfx_z, plate_x, plate_z, launch_speed, launch_angle, bat_speed, swing_length, events, description | Modern Statcast 2024-2025 postseason (27K rows) |
 
+**Live 2026 season tables (from MLB Stats API):**
+
+| Table | Key Columns | Description |
+|-------|-------------|-------------|
+| `live_games` | game_pk, game_date, away_team_name, home_team_name, away_score, home_score, venue_name, weather_condition, weather_temp, weather_wind, game_status | 2026 completed games (~764 rows) |
+| `live_boxscore_batting` | game_pk, player_id, player_name, team_name, at_bats, hits, home_runs, rbi, walks, strikeouts, avg, obp, slg, ops | Per-game batting stats (~16K rows) |
+| `live_boxscore_pitching` | game_pk, player_id, player_name, team_name, innings_pitched, hits, earned_runs, strikeouts, walks, era, whip, pitch_count, win, loss, save | Per-game pitching stats (~6K rows) |
+| `live_plays` | game_pk, at_bat_index, inning, half_inning, batter_name, pitcher_name, event, event_type, description, rbi, is_scoring_play, is_out | Play-by-play (~58K rows) |
+| `live_pitches` | game_pk, at_bat_index, pitch_number, pitcher_id, batter_id, pitch_type, pitch_description, start_speed, spin_rate, plate_x, plate_z, pfx_x, pfx_z, is_strike, is_ball, is_in_play, balls, strikes, outs | Individual pitches 2026 (~223K rows) |
+| `live_standings` | team_name, wins, losses, winning_pct, games_back, division_name, streak, runs_scored, runs_allowed, run_differential, division_rank | Current standings (30 rows) |
+
 **Computed statistics (must calculate in SQL):**
 - Batting Average (AVG): `CAST(H AS DOUBLE) / NULLIF(AB, 0)`
 - On-Base Percentage (OBP): `CAST(H + BB + HBP AS DOUBLE) / NULLIF(AB + BB + HBP + SF, 0)`
@@ -78,6 +89,8 @@ Execute read-only SQL against the `lakehouse.mlb` schema. Only SELECT allowed.
 - Park weather: `JOIN parks p ON ... JOIN weather_stations ws ON LOWER(p.city) = LOWER(ws.city_name) JOIN weather_daily wd ON ws.station_id = wd.station_id`
 - Pitch with pitcher name: `JOIN pitch_atbats a ON pitch_pitches.ab_id = a.ab_id JOIN pitch_player_names n ON a.pitcher_id = n.id`
 - Pitch with game context: `JOIN pitch_atbats a ON pitch_pitches.ab_id = a.ab_id JOIN pitch_games g ON a.g_id = g.g_id`
+- Live boxscore with game: `JOIN live_games g ON live_boxscore_batting.game_pk = g.game_pk`
+- Live season totals: `SELECT player_name, SUM(home_runs) FROM live_boxscore_batting GROUP BY player_name ORDER BY 2 DESC`
 
 ### 3. `describe_datasets(topic)`
 List available datasets for a topic: `"batting"`, `"pitching"`, `"fielding"`, `"postseason"`, `"awards"`, `"teams"`, `"weather"`, `"all"`.

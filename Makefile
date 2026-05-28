@@ -10,7 +10,7 @@ PLATFORM     ?= linux/amd64
 
 .PHONY: help build build-agent build-mcp push push-agent push-mcp all \
 	deploy-all deploy-agent deploy-mcp restart restart-agent restart-mcp status \
-	logs-agent logs-mcp load-data load-baseball load-weather load-pitch upload-data \
+	logs-agent logs-mcp load-data load-baseball load-weather load-pitch load-live upload-data \
 	set-model register-prompt spicedb-seed
 
 help: ## Show this help
@@ -88,7 +88,7 @@ logs-mcp: ## Tail MCP server logs
 	oc logs -f deployment/mlb-mcp-server -n $(NAMESPACE)
 
 # ── Data Loading ──────────────────────────────────────────
-load-data: load-baseball load-weather load-pitch ## Load all data into Trino
+load-data: load-baseball load-weather load-pitch load-live ## Load all data into Trino
 
 load-baseball: ## Load baseball data into Trino (requires port-forward)
 	TRINO_HOST=localhost TRINO_PORT=8090 MINIO_ENDPOINT=localhost:9000 \
@@ -101,6 +101,10 @@ load-weather: ## Load weather data into Trino (requires port-forward)
 load-pitch: ## Load pitch data into Trino (requires port-forward)
 	TRINO_HOST=localhost TRINO_PORT=8090 MINIO_ENDPOINT=localhost:9000 \
 		DATA_DIR=data/pitch python3 scripts/load-pitch-trino.py
+
+load-live: ## Load live 2026 season data from MLB Stats API (requires port-forward)
+	TRINO_HOST=localhost TRINO_PORT=8090 MINIO_ENDPOINT=localhost:9000 \
+		python3 scripts/load-live-trino.py
 
 upload-data: ## Upload raw CSV files to MinIO (requires port-forward)
 	MINIO_ENDPOINT=localhost:9000 python3 scripts/upload-data-minio.py

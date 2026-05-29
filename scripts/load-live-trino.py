@@ -1,36 +1,34 @@
 #!/usr/bin/env python3
 """Fetch 2026 MLB season data from Stats API and load into Trino Iceberg.
 
-Pipeline: MLB Stats API → local JSON cache → pandas → Parquet → MinIO → Hive staging → CTAS Iceberg.
+Pipeline: MLB Stats API → JSON cache → per-game Parquet → MinIO → Hive staging → CTAS Iceberg.
 
-JSON responses are cached to data/live/{gamePk}.json so re-runs skip API calls.
-Use --force-refresh to bypass the cache.
+Per-game Parquet files are cached locally and in MinIO. Re-runs only
+fetch new games from the API and write new Parquet files. The Trino
+CTAS reads all Parquet files from MinIO in one pass.
 
 Usage:
-    python scripts/load-live-trino.py
-    python scripts/load-live-trino.py --force-refresh
+    python scripts/load-live-trino.py              # Incremental (new games only)
+    python scripts/load-live-trino.py --force-refresh  # Re-fetch all from API
 
 Environment variables:
     TRINO_HOST, TRINO_PORT, MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY
     MLB_SEASON       Season year (default: 2026)
     MLB_START_DATE   Start date YYYY-MM-DD (default: {season}-04-01)
     MLB_END_DATE     End date YYYY-MM-DD (default: today)
-    CACHE_DIR        Local JSON cache directory (default: data/live)
+    CACHE_DIR        Local cache directory (default: data/live)
 """
 
 import json
 import os
 import sys
 import time
-import tempfile
-import shutil
-from datetime import date, datetime
+from datetime import date
 import urllib.request
 import urllib.error
 
 import pandas as pd
 from minio import Minio
-from minio.deleteobjects import DeleteObject
 from trino.dbapi import connect
 
 TRINO_HOST = os.environ.get("TRINO_HOST", "localhost")
@@ -50,9 +48,20 @@ PARQUET_PREFIX = "parquet"
 API_BASE = "https://statsapi.mlb.com"
 REQUEST_DELAY = 0.3
 
+# Local Parquet cache
+PARQUET_CACHE = os.path.join(CACHE_DIR, "parquet")
+
+TABLES = [
+    "live_games", "live_boxscore_batting", "live_boxscore_pitching",
+    "live_plays", "live_pitches", "live_standings",
+]
+
+
+# ---------------------------------------------------------------------------
+# API fetching (with JSON cache)
+# ---------------------------------------------------------------------------
 
 def _fetch_json(url, cache_path=None):
-    """Fetch JSON from URL, using local cache if available."""
     if cache_path and os.path.exists(cache_path) and not FORCE_REFRESH:
         with open(cache_path) as f:
             return json.load(f)
@@ -66,25 +75,25 @@ def _fetch_json(url, cache_path=None):
             if attempt < 2:
                 time.sleep(2 * (attempt + 1))
                 continue
-            print(f"    WARN: Failed to fetch {url} after 3 attempts: {e}", flush=True)
+            print(f"    WARN: Failed to fetch {url}: {e}", flush=True)
             return None
 
     if cache_path:
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)
         with open(cache_path, "w") as f:
             json.dump(data, f)
-
     return data
 
 
 def fetch_schedule(start_date, end_date):
-    """Fetch all completed games in date range."""
     cache_path = os.path.join(CACHE_DIR, f"schedule_{start_date}_{end_date}.json")
+    # Always refresh schedule to pick up newly completed games
+    if os.path.exists(cache_path):
+        os.remove(cache_path)
     url = f"{API_BASE}/api/v1/schedule?sportId=1&startDate={start_date}&endDate={end_date}&gameType=R"
     data = _fetch_json(url, cache_path)
     if not data:
         return []
-
     games = []
     for d in data.get("dates", []):
         for g in d.get("games", []):
@@ -94,41 +103,17 @@ def fetch_schedule(start_date, end_date):
 
 
 def fetch_game_feed(game_pk):
-    """Fetch live game feed, cached per gamePk."""
     cache_path = os.path.join(CACHE_DIR, f"{game_pk}.json")
-    url = f"{API_BASE}/api/v1.1/game/{game_pk}/feed/live"
-
     if os.path.exists(cache_path) and not FORCE_REFRESH:
         with open(cache_path) as f:
             return json.load(f)
-
     time.sleep(REQUEST_DELAY)
-    return _fetch_json(url, cache_path)
+    return _fetch_json(f"{API_BASE}/api/v1.1/game/{game_pk}/feed/live", cache_path)
 
 
-def extract_games(schedule_games):
-    """Extract game-level rows from schedule data."""
-    rows = []
-    for g in schedule_games:
-        rows.append({
-            "game_pk": g["gamePk"],
-            "game_date": g.get("officialDate", g.get("gameDate", "")[:10]),
-            "season": g.get("season", MLB_SEASON),
-            "away_team_id": g["teams"]["away"]["team"]["id"],
-            "away_team_name": g["teams"]["away"]["team"]["name"],
-            "home_team_id": g["teams"]["home"]["team"]["id"],
-            "home_team_name": g["teams"]["home"]["team"]["name"],
-            "away_score": g["teams"]["away"].get("score"),
-            "home_score": g["teams"]["home"].get("score"),
-            "game_status": g["status"].get("detailedState", ""),
-            "venue_name": g.get("venue", {}).get("name", ""),
-            "venue_id": g.get("venue", {}).get("id"),
-            "day_night": g.get("dayNight", ""),
-            "game_type": g.get("gameType", ""),
-            "scheduled_innings": g.get("scheduledInnings", 9),
-        })
-    return pd.DataFrame(rows)
-
+# ---------------------------------------------------------------------------
+# Data extraction (unchanged from original)
+# ---------------------------------------------------------------------------
 
 def _safe_int(v):
     if v is None or v == "":
@@ -148,12 +133,28 @@ def _safe_float(v):
         return None
 
 
+def extract_game_row(g):
+    return {
+        "game_pk": g["gamePk"],
+        "game_date": g.get("officialDate", g.get("gameDate", "")[:10]),
+        "season": g.get("season", MLB_SEASON),
+        "away_team_id": g["teams"]["away"]["team"]["id"],
+        "away_team_name": g["teams"]["away"]["team"]["name"],
+        "home_team_id": g["teams"]["home"]["team"]["id"],
+        "home_team_name": g["teams"]["home"]["team"]["name"],
+        "away_score": g["teams"]["away"].get("score"),
+        "home_score": g["teams"]["home"].get("score"),
+        "game_status": g["status"].get("detailedState", ""),
+        "venue_name": g.get("venue", {}).get("name", ""),
+        "venue_id": g.get("venue", {}).get("id"),
+        "day_night": g.get("dayNight", ""),
+        "game_type": g.get("gameType", ""),
+        "scheduled_innings": g.get("scheduledInnings", 9),
+    }
+
+
 def extract_from_feed(game_pk, feed):
-    """Extract boxscore, plays, and pitches from a game feed."""
-    batting_rows = []
-    pitching_rows = []
-    play_rows = []
-    pitch_rows = []
+    batting_rows, pitching_rows, play_rows, pitch_rows = [], [], [], []
 
     game_data = feed.get("gameData", {})
     weather = game_data.get("weather", {})
@@ -163,77 +164,58 @@ def extract_from_feed(game_pk, feed):
         "weather_wind": weather.get("wind", ""),
     }
 
-    # Boxscore
     boxscore = feed.get("liveData", {}).get("boxscore", {}).get("teams", {})
     for side in ["away", "home"]:
         team_data = boxscore.get(side, {})
         team_id = team_data.get("team", {}).get("id")
         team_name = team_data.get("team", {}).get("name", "")
-        players = team_data.get("players", {})
-
-        for pid, pdata in players.items():
+        for pid, pdata in team_data.get("players", {}).items():
             person = pdata.get("person", {})
             player_id = person.get("id")
             player_name = person.get("fullName", "")
-            bat_stats = pdata.get("stats", {}).get("batting", {})
-            pitch_stats = pdata.get("stats", {}).get("pitching", {})
+            bat = pdata.get("stats", {}).get("batting", {})
+            pit = pdata.get("stats", {}).get("pitching", {})
 
-            if bat_stats and bat_stats.get("atBats") is not None:
+            if bat and bat.get("atBats") is not None:
                 batting_rows.append({
-                    "game_pk": game_pk,
-                    "player_id": player_id,
-                    "player_name": player_name,
-                    "team_id": team_id,
-                    "team_name": team_name,
-                    "side": side,
-                    "at_bats": _safe_int(bat_stats.get("atBats")),
-                    "runs": _safe_int(bat_stats.get("runs")),
-                    "hits": _safe_int(bat_stats.get("hits")),
-                    "doubles": _safe_int(bat_stats.get("doubles")),
-                    "triples": _safe_int(bat_stats.get("triples")),
-                    "home_runs": _safe_int(bat_stats.get("homeRuns")),
-                    "rbi": _safe_int(bat_stats.get("rbi")),
-                    "walks": _safe_int(bat_stats.get("baseOnBalls")),
-                    "strikeouts": _safe_int(bat_stats.get("strikeOuts")),
-                    "stolen_bases": _safe_int(bat_stats.get("stolenBases")),
-                    "caught_stealing": _safe_int(bat_stats.get("caughtStealing")),
-                    "hit_by_pitch": _safe_int(bat_stats.get("hitByPitch")),
-                    "sac_flies": _safe_int(bat_stats.get("sacFlies")),
-                    "ground_into_dp": _safe_int(bat_stats.get("groundIntoDoublePlay")),
-                    "plate_appearances": _safe_int(bat_stats.get("plateAppearances")),
-                    "total_bases": _safe_int(bat_stats.get("totalBases")),
-                    "avg": bat_stats.get("avg", ""),
-                    "obp": bat_stats.get("obp", ""),
-                    "slg": bat_stats.get("slg", ""),
-                    "ops": bat_stats.get("ops", ""),
+                    "game_pk": game_pk, "player_id": player_id, "player_name": player_name,
+                    "team_id": team_id, "team_name": team_name, "side": side,
+                    "at_bats": _safe_int(bat.get("atBats")), "runs": _safe_int(bat.get("runs")),
+                    "hits": _safe_int(bat.get("hits")), "doubles": _safe_int(bat.get("doubles")),
+                    "triples": _safe_int(bat.get("triples")), "home_runs": _safe_int(bat.get("homeRuns")),
+                    "rbi": _safe_int(bat.get("rbi")), "walks": _safe_int(bat.get("baseOnBalls")),
+                    "strikeouts": _safe_int(bat.get("strikeOuts")),
+                    "stolen_bases": _safe_int(bat.get("stolenBases")),
+                    "caught_stealing": _safe_int(bat.get("caughtStealing")),
+                    "hit_by_pitch": _safe_int(bat.get("hitByPitch")),
+                    "sac_flies": _safe_int(bat.get("sacFlies")),
+                    "ground_into_dp": _safe_int(bat.get("groundIntoDoublePlay")),
+                    "plate_appearances": _safe_int(bat.get("plateAppearances")),
+                    "total_bases": _safe_int(bat.get("totalBases")),
+                    "avg": bat.get("avg", ""), "obp": bat.get("obp", ""),
+                    "slg": bat.get("slg", ""), "ops": bat.get("ops", ""),
                 })
 
-            if pitch_stats and pitch_stats.get("inningsPitched") is not None:
+            if pit and pit.get("inningsPitched") is not None:
                 pitching_rows.append({
-                    "game_pk": game_pk,
-                    "player_id": player_id,
-                    "player_name": player_name,
-                    "team_id": team_id,
-                    "team_name": team_name,
-                    "innings_pitched": pitch_stats.get("inningsPitched", ""),
-                    "hits": _safe_int(pitch_stats.get("hits")),
-                    "runs": _safe_int(pitch_stats.get("runs")),
-                    "earned_runs": _safe_int(pitch_stats.get("earnedRuns")),
-                    "walks": _safe_int(pitch_stats.get("baseOnBalls")),
-                    "strikeouts": _safe_int(pitch_stats.get("strikeOuts")),
-                    "home_runs": _safe_int(pitch_stats.get("homeRuns")),
-                    "pitch_count": _safe_int(pitch_stats.get("numberOfPitches")),
-                    "strikes": _safe_int(pitch_stats.get("strikes")),
-                    "balls": _safe_int(pitch_stats.get("balls")),
-                    "era": pitch_stats.get("era", ""),
-                    "whip": pitch_stats.get("whip", ""),
-                    "win": pitch_stats.get("wins") == 1 if pitch_stats.get("wins") is not None else None,
-                    "loss": pitch_stats.get("losses") == 1 if pitch_stats.get("losses") is not None else None,
-                    "save": pitch_stats.get("saves") == 1 if pitch_stats.get("saves") is not None else None,
-                    "hold": pitch_stats.get("holds") == 1 if pitch_stats.get("holds") is not None else None,
+                    "game_pk": game_pk, "player_id": player_id, "player_name": player_name,
+                    "team_id": team_id, "team_name": team_name,
+                    "innings_pitched": pit.get("inningsPitched", ""),
+                    "hits": _safe_int(pit.get("hits")), "runs": _safe_int(pit.get("runs")),
+                    "earned_runs": _safe_int(pit.get("earnedRuns")),
+                    "walks": _safe_int(pit.get("baseOnBalls")),
+                    "strikeouts": _safe_int(pit.get("strikeOuts")),
+                    "home_runs": _safe_int(pit.get("homeRuns")),
+                    "pitch_count": _safe_int(pit.get("numberOfPitches")),
+                    "strikes": _safe_int(pit.get("strikes")),
+                    "balls": _safe_int(pit.get("balls")),
+                    "era": pit.get("era", ""), "whip": pit.get("whip", ""),
+                    "win": pit.get("wins") == 1 if pit.get("wins") is not None else None,
+                    "loss": pit.get("losses") == 1 if pit.get("losses") is not None else None,
+                    "save": pit.get("saves") == 1 if pit.get("saves") is not None else None,
+                    "hold": pit.get("holds") == 1 if pit.get("holds") is not None else None,
                 })
 
-    # Plays and pitches
     all_plays = feed.get("liveData", {}).get("plays", {}).get("allPlays", [])
     for play in all_plays:
         result = play.get("result", {})
@@ -241,17 +223,14 @@ def extract_from_feed(game_pk, feed):
         matchup = play.get("matchup", {})
 
         play_rows.append({
-            "game_pk": game_pk,
-            "at_bat_index": about.get("atBatIndex"),
-            "inning": about.get("inning"),
-            "half_inning": about.get("halfInning", ""),
+            "game_pk": game_pk, "at_bat_index": about.get("atBatIndex"),
+            "inning": about.get("inning"), "half_inning": about.get("halfInning", ""),
             "is_top_inning": about.get("isTopInning"),
             "batter_id": matchup.get("batter", {}).get("id"),
             "batter_name": matchup.get("batter", {}).get("fullName", ""),
             "pitcher_id": matchup.get("pitcher", {}).get("id"),
             "pitcher_name": matchup.get("pitcher", {}).get("fullName", ""),
-            "event": result.get("event", ""),
-            "event_type": result.get("eventType", ""),
+            "event": result.get("event", ""), "event_type": result.get("eventType", ""),
             "description": (result.get("description", "") or "")[:500],
             "rbi": _safe_int(result.get("rbi")),
             "away_score": _safe_int(result.get("awayScore")),
@@ -268,10 +247,8 @@ def extract_from_feed(game_pk, feed):
             coords = pitch_data.get("coordinates", {})
             breaks = pitch_data.get("breaks", {})
             count = event.get("count", {})
-
             pitch_rows.append({
-                "game_pk": game_pk,
-                "at_bat_index": about.get("atBatIndex"),
+                "game_pk": game_pk, "at_bat_index": about.get("atBatIndex"),
                 "pitch_number": event.get("pitchNumber"),
                 "pitcher_id": matchup.get("pitcher", {}).get("id"),
                 "batter_id": matchup.get("batter", {}).get("id"),
@@ -307,14 +284,14 @@ def extract_from_feed(game_pk, feed):
 
 
 def fetch_standings():
-    """Fetch current standings."""
     today = date.today().isoformat()
     cache_path = os.path.join(CACHE_DIR, f"standings_{today}.json")
+    if os.path.exists(cache_path):
+        os.remove(cache_path)
     url = f"{API_BASE}/api/v1/standings?leagueId=103,104&season={MLB_SEASON}"
     data = _fetch_json(url, cache_path)
     if not data:
         return pd.DataFrame()
-
     rows = []
     for record in data.get("records", []):
         division = record.get("division", {})
@@ -322,13 +299,11 @@ def fetch_standings():
             team = tr.get("team", {})
             lr = tr.get("leagueRecord", {})
             rows.append({
-                "standings_date": today,
-                "team_id": team.get("id"),
+                "standings_date": today, "team_id": team.get("id"),
                 "team_name": team.get("name", ""),
                 "division_id": division.get("id"),
                 "division_name": division.get("name", ""),
-                "wins": _safe_int(lr.get("wins")),
-                "losses": _safe_int(lr.get("losses")),
+                "wins": _safe_int(lr.get("wins")), "losses": _safe_int(lr.get("losses")),
                 "winning_pct": lr.get("pct", ""),
                 "games_back": tr.get("gamesBack", ""),
                 "wild_card_games_back": tr.get("wildCardGamesBack", ""),
@@ -340,6 +315,49 @@ def fetch_standings():
                 "league_rank": tr.get("leagueRank", ""),
             })
     return pd.DataFrame(rows)
+
+
+# ---------------------------------------------------------------------------
+# Per-game Parquet writing (local cache + MinIO upload)
+# ---------------------------------------------------------------------------
+
+def _write_game_parquet(game_pk, table_name, df):
+    """Write per-game Parquet to local cache. Returns path."""
+    table_dir = os.path.join(PARQUET_CACHE, table_name)
+    os.makedirs(table_dir, exist_ok=True)
+    path = os.path.join(table_dir, f"{game_pk}.parquet")
+    df.to_parquet(path, index=False, engine="pyarrow")
+    return path
+
+
+def _game_parquet_exists(game_pk, table_name):
+    """Check if per-game Parquet already exists locally."""
+    return os.path.exists(os.path.join(PARQUET_CACHE, table_name, f"{game_pk}.parquet"))
+
+
+def _sync_parquet_to_minio(minio_client, table_name):
+    """Upload any local Parquet files not yet in MinIO."""
+    s3_dir = f"{PARQUET_PREFIX}/{table_name}"
+    local_dir = os.path.join(PARQUET_CACHE, table_name)
+    if not os.path.isdir(local_dir):
+        return 0
+
+    # Get existing S3 keys
+    existing = set()
+    for obj in minio_client.list_objects(BUCKET, prefix=f"{s3_dir}/", recursive=True):
+        existing.add(os.path.basename(obj.object_name))
+
+    uploaded = 0
+    for fname in sorted(os.listdir(local_dir)):
+        if not fname.endswith(".parquet"):
+            continue
+        if fname in existing:
+            continue
+        local_path = os.path.join(local_dir, fname)
+        minio_client.fput_object(BUCKET, f"{s3_dir}/{fname}", local_path)
+        uploaded += 1
+
+    return uploaded
 
 
 def _staging_type(dtype):
@@ -362,120 +380,160 @@ def _ctas_cast(col, dtype):
     return f'CAST("{col}" AS VARCHAR) AS "{col}"'
 
 
-def load_table(name, df, minio_client, staging_cur, lakehouse_cur, tmpdir):
-    """Write Parquet, upload to MinIO, staging table, CTAS into Iceberg."""
-    if df.empty:
-        print(f"  {name}: empty — skipping", flush=True)
+def rebuild_iceberg_table(table_name, minio_client, staging_cur, lakehouse_cur):
+    """Recreate Iceberg table from all Parquet files in MinIO."""
+    s3_dir = f"{PARQUET_PREFIX}/{table_name}"
+
+    # Read multiple sample Parquet files to detect widest types
+    # (some games have NULLs which pandas writes as float64 vs int64)
+    local_dir = os.path.join(PARQUET_CACHE, table_name)
+    sample_files = [f for f in os.listdir(local_dir) if f.endswith(".parquet")] if os.path.isdir(local_dir) else []
+    if not sample_files:
+        print(f"  {table_name}: no Parquet files — skipping", flush=True)
         return 0
 
-    print(f"  {name}: {len(df):,} rows", flush=True)
+    # Merge schemas from several files to get the widest type per column
+    import pyarrow as pa
+    import pyarrow.parquet as pq
+    schemas = []
+    for f in sample_files[:20]:
+        schemas.append(pq.read_schema(os.path.join(local_dir, f)))
+    merged = pa.unify_schemas(schemas, promote_options="permissive")
+    sample_df = pd.DataFrame({f.name: pd.Series(dtype="object") for f in merged})
+    # Map arrow types to pandas-like dtype strings for staging
+    # Use DOUBLE for all numeric columns — per-game Parquet files have
+    # inconsistent int64/float64 types depending on whether NULLs are present.
+    # DOUBLE safely reads both. We cast to INTEGER in the CTAS.
+    arrow_to_staging = {}
+    for field in merged:
+        atype = str(field.type)
+        if atype in ("double", "float", "int64", "int32"):
+            arrow_to_staging[field.name] = "DOUBLE"
+        elif atype == "bool":
+            arrow_to_staging[field.name] = "BOOLEAN"
+        else:
+            arrow_to_staging[field.name] = "VARCHAR"
 
-    s3_dir = f"{PARQUET_PREFIX}/{name}"
-    old = list(minio_client.list_objects(BUCKET, prefix=f"{s3_dir}/", recursive=True))
-    if old:
-        list(minio_client.remove_objects(BUCKET, [DeleteObject(o.object_name) for o in old]))
-
-    chunk_size = 1_000_000
-    n_chunks = max(1, (len(df) + chunk_size - 1) // chunk_size)
-    for i in range(n_chunks):
-        chunk = df.iloc[i * chunk_size:(i + 1) * chunk_size]
-        pq_name = f"{name}_{i:03d}.parquet"
-        pq_path = os.path.join(tmpdir, pq_name)
-        chunk.to_parquet(pq_path, index=False, engine="pyarrow")
-        minio_client.fput_object(BUCKET, f"{s3_dir}/{pq_name}", pq_path)
-        os.remove(pq_path)
-
-    staging_cur.execute(f'DROP TABLE IF EXISTS staging.mlb."{name}"')
-    col_defs = ", ".join(f'"{c}" {_staging_type(str(df[c].dtype))}' for c in df.columns)
+    staging_cur.execute(f'DROP TABLE IF EXISTS staging.mlb."{table_name}"')
+    col_defs = ", ".join(f'"{c}" {arrow_to_staging[c]}' for c in arrow_to_staging)
     staging_cur.execute(f"""
-        CREATE TABLE staging.mlb."{name}" ({col_defs})
+        CREATE TABLE staging.mlb."{table_name}" ({col_defs})
         WITH (format = 'PARQUET', external_location = 's3://{BUCKET}/{s3_dir}/')
     """)
 
-    lakehouse_cur.execute(f'DROP TABLE IF EXISTS lakehouse.mlb."{name}"')
-    select_cols = ", ".join(_ctas_cast(c, str(df[c].dtype)) for c in df.columns)
+    lakehouse_cur.execute(f'DROP TABLE IF EXISTS lakehouse.mlb."{table_name}"')
+    ctas_cols = []
+    for c, stype in arrow_to_staging.items():
+        if stype in ("DOUBLE", "BOOLEAN"):
+            ctas_cols.append(f'"{c}"')
+        else:
+            ctas_cols.append(f'CAST("{c}" AS VARCHAR) AS "{c}"')
     lakehouse_cur.execute(f"""
-        CREATE TABLE lakehouse.mlb."{name}" AS
-        SELECT {select_cols} FROM staging.mlb."{name}"
+        CREATE TABLE lakehouse.mlb."{table_name}" AS
+        SELECT {", ".join(ctas_cols)} FROM staging.mlb."{table_name}"
     """)
 
-    lakehouse_cur.execute(f'SELECT COUNT(*) FROM lakehouse.mlb."{name}"')
+    lakehouse_cur.execute(f'SELECT COUNT(*) FROM lakehouse.mlb."{table_name}"')
     count = lakehouse_cur.fetchone()[0]
-    print(f"    -> {count:,} rows loaded", flush=True)
     return count
 
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
 
 def main():
     t0 = time.time()
     os.makedirs(CACHE_DIR, exist_ok=True)
+    os.makedirs(PARQUET_CACHE, exist_ok=True)
 
-    print(f"MLB Stats API Ingestion", flush=True)
-    print(f"  Season: {MLB_SEASON}", flush=True)
-    print(f"  Date range: {MLB_START_DATE} to {MLB_END_DATE}", flush=True)
-    print(f"  Cache: {CACHE_DIR}", flush=True)
-    print(f"  Force refresh: {FORCE_REFRESH}", flush=True)
-    print(f"  Trino: {TRINO_HOST}:{TRINO_PORT}", flush=True)
-    print(f"  MinIO: {MINIO_ENDPOINT}", flush=True)
+    print(f"MLB Stats API Ingestion (incremental)", flush=True)
+    print(f"  Season: {MLB_SEASON}  Range: {MLB_START_DATE} to {MLB_END_DATE}", flush=True)
+    print(f"  Cache: {CACHE_DIR}  Parquet: {PARQUET_CACHE}", flush=True)
+    print(f"  Trino: {TRINO_HOST}:{TRINO_PORT}  MinIO: {MINIO_ENDPOINT}", flush=True)
 
     # 1. Fetch schedule
     print("\nFetching schedule...", flush=True)
     schedule_games = fetch_schedule(MLB_START_DATE, MLB_END_DATE)
-    print(f"  {len(schedule_games)} completed games found", flush=True)
+    print(f"  {len(schedule_games)} completed games", flush=True)
 
     if not schedule_games:
-        print("No completed games — nothing to load.", flush=True)
+        print("No completed games.", flush=True)
         return
 
-    # 2. Extract game-level data
-    games_df = extract_games(schedule_games)
-
-    # 3. Fetch and extract from each game feed
-    print(f"\nProcessing {len(schedule_games)} game feeds...", flush=True)
-    all_batting, all_pitching, all_plays, all_pitches = [], [], [], []
-    weather_data = {}
-
-    for i, g in enumerate(schedule_games):
+    # 2. Find games that need processing (no local Parquet yet)
+    new_game_pks = set()
+    for g in schedule_games:
         gpk = g["gamePk"]
-        feed = fetch_game_feed(gpk)
-        if not feed:
-            continue
+        if not _game_parquet_exists(gpk, "live_games") or FORCE_REFRESH:
+            new_game_pks.add(gpk)
 
-        batting, pitching, plays, pitches, weather_info = extract_from_feed(gpk, feed)
-        all_batting.extend(batting)
-        all_pitching.extend(pitching)
-        all_plays.extend(plays)
-        all_pitches.extend(pitches)
-        weather_data[gpk] = weather_info
+    print(f"  {len(new_game_pks)} new games to process, {len(schedule_games) - len(new_game_pks)} cached", flush=True)
 
-        if (i + 1) % 100 == 0 or i == len(schedule_games) - 1:
-            cached = sum(1 for gg in schedule_games[:i+1]
-                         if os.path.exists(os.path.join(CACHE_DIR, f"{gg['gamePk']}.json"))
-                         and not FORCE_REFRESH)
-            print(f"  {i+1}/{len(schedule_games)} games processed "
-                  f"({len(all_pitches):,} pitches so far)", flush=True)
+    # 3. Process new games — fetch JSON, extract, write per-game Parquet
+    if new_game_pks:
+        new_games = [g for g in schedule_games if g["gamePk"] in new_game_pks]
+        print(f"\nProcessing {len(new_games)} new game feeds...", flush=True)
 
-    # Add weather to games_df
-    games_df["weather_condition"] = games_df["game_pk"].map(
-        lambda pk: weather_data.get(pk, {}).get("weather_condition", ""))
-    games_df["weather_temp"] = games_df["game_pk"].map(
-        lambda pk: weather_data.get(pk, {}).get("weather_temp", ""))
-    games_df["weather_wind"] = games_df["game_pk"].map(
-        lambda pk: weather_data.get(pk, {}).get("weather_wind", ""))
+        for i, g in enumerate(new_games):
+            gpk = g["gamePk"]
+            feed = fetch_game_feed(gpk)
+            if not feed:
+                continue
 
-    batting_df = pd.DataFrame(all_batting) if all_batting else pd.DataFrame()
-    pitching_df = pd.DataFrame(all_pitching) if all_pitching else pd.DataFrame()
-    plays_df = pd.DataFrame(all_plays) if all_plays else pd.DataFrame()
-    pitches_df = pd.DataFrame(all_pitches) if all_pitches else pd.DataFrame()
+            batting, pitching, plays, pitches, weather_info = extract_from_feed(gpk, feed)
 
-    # 4. Fetch standings
+            # Game row with weather
+            game_row = extract_game_row(g)
+            game_row.update(weather_info)
+            _write_game_parquet(gpk, "live_games", pd.DataFrame([game_row]))
+
+            if batting:
+                _write_game_parquet(gpk, "live_boxscore_batting", pd.DataFrame(batting))
+            if pitching:
+                _write_game_parquet(gpk, "live_boxscore_pitching", pd.DataFrame(pitching))
+            if plays:
+                _write_game_parquet(gpk, "live_plays", pd.DataFrame(plays))
+            if pitches:
+                _write_game_parquet(gpk, "live_pitches", pd.DataFrame(pitches))
+
+            if (i + 1) % 50 == 0 or i == len(new_games) - 1:
+                print(f"  {i+1}/{len(new_games)} games processed", flush=True)
+
+    # 4. Standings (always refresh)
     print("\nFetching standings...", flush=True)
     standings_df = fetch_standings()
+    if not standings_df.empty:
+        standings_dir = os.path.join(PARQUET_CACHE, "live_standings")
+        os.makedirs(standings_dir, exist_ok=True)
+        # Standings is a single file, always overwritten
+        standings_df.to_parquet(os.path.join(standings_dir, "standings.parquet"), index=False, engine="pyarrow")
     print(f"  {len(standings_df)} team records", flush=True)
 
-    # 5. Load into Trino
-    print(f"\nConnecting to Trino at {TRINO_HOST}:{TRINO_PORT}", flush=True)
+    # 5. Sync Parquet to MinIO (upload only new files)
+    print("\nSyncing Parquet to MinIO...", flush=True)
     minio_client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY,
                          secret_key=MINIO_SECRET_KEY, secure=False)
+    total_uploaded = 0
+    for table in TABLES:
+        if table == "live_standings":
+            # Standings always re-upload (single file, small)
+            s3_dir = f"{PARQUET_PREFIX}/{table}"
+            from minio.deleteobjects import DeleteObject
+            old = list(minio_client.list_objects(BUCKET, prefix=f"{s3_dir}/", recursive=True))
+            if old:
+                list(minio_client.remove_objects(BUCKET, [DeleteObject(o.object_name) for o in old]))
+            local_path = os.path.join(PARQUET_CACHE, table, "standings.parquet")
+            if os.path.exists(local_path):
+                minio_client.fput_object(BUCKET, f"{s3_dir}/standings.parquet", local_path)
+                total_uploaded += 1
+        else:
+            uploaded = _sync_parquet_to_minio(minio_client, table)
+            total_uploaded += uploaded
+    print(f"  Uploaded {total_uploaded} new Parquet files", flush=True)
+
+    # 6. Rebuild Iceberg tables from staging
+    print(f"\nRebuilding Iceberg tables...", flush=True)
     staging_conn = connect(host=TRINO_HOST, port=TRINO_PORT, user="admin",
                            catalog="staging", schema="mlb")
     lakehouse_conn = connect(host=TRINO_HOST, port=TRINO_PORT, user="admin",
@@ -485,27 +543,21 @@ def main():
     staging_cur.execute("CREATE SCHEMA IF NOT EXISTS staging.mlb")
     lakehouse_cur.execute("CREATE SCHEMA IF NOT EXISTS lakehouse.mlb")
 
-    tmpdir = tempfile.mkdtemp(prefix="mlb-live-")
-    total = 0
-
-    print("\nLoading tables...", flush=True)
-    total += load_table("live_games", games_df, minio_client, staging_cur, lakehouse_cur, tmpdir)
-    total += load_table("live_boxscore_batting", batting_df, minio_client, staging_cur, lakehouse_cur, tmpdir)
-    total += load_table("live_boxscore_pitching", pitching_df, minio_client, staging_cur, lakehouse_cur, tmpdir)
-    total += load_table("live_plays", plays_df, minio_client, staging_cur, lakehouse_cur, tmpdir)
-    total += load_table("live_pitches", pitches_df, minio_client, staging_cur, lakehouse_cur, tmpdir)
-    total += load_table("live_standings", standings_df, minio_client, staging_cur, lakehouse_cur, tmpdir)
+    total_rows = 0
+    for table in TABLES:
+        count = rebuild_iceberg_table(table, minio_client, staging_cur, lakehouse_cur)
+        print(f"  {table}: {count:,} rows", flush=True)
+        total_rows += count
 
     elapsed = time.time() - t0
-    print(f"\nLoaded {total:,} rows across 6 tables in {elapsed:.1f}s", flush=True)
+    print(f"\nLoaded {total_rows:,} rows across {len(TABLES)} tables in {elapsed:.1f}s", flush=True)
 
     # Verification
     print("\nVerification:", flush=True)
     try:
         lakehouse_cur.execute("""
             SELECT game_date, away_team_name, home_team_name, away_score, home_score
-            FROM lakehouse.mlb.live_games
-            ORDER BY game_date DESC LIMIT 5
+            FROM lakehouse.mlb.live_games ORDER BY game_date DESC LIMIT 5
         """)
         print("  Last 5 games:")
         for r in lakehouse_cur.fetchall():
@@ -519,13 +571,12 @@ def main():
             FROM lakehouse.mlb.live_standings
             ORDER BY CAST(winning_pct AS DOUBLE) DESC LIMIT 5
         """)
-        print("  Top 5 teams by record:")
+        print("  Top 5 teams:")
         for r in lakehouse_cur.fetchall():
             print(f"    {r[0]}: {r[1]}-{r[2]} ({r[3]}) [{r[4]}]")
     except Exception as e:
         print(f"  Standings query failed: {e}")
 
-    shutil.rmtree(tmpdir, ignore_errors=True)
     staging_conn.close()
     lakehouse_conn.close()
     print("\nDone!", flush=True)

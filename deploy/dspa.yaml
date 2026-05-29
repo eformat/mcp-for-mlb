@@ -1,0 +1,18 @@
+apiVersion: datasciencepipelinesapplications.opendatahub.io/v1
+kind: DataSciencePipelinesApplication
+metadata:
+  name: dspa
+  labels:
+    app.kubernetes.io/name: mlb-eval-pipeline
+spec:
+  dspVersion: v2
+  objectStorage:
+    externalStorage:
+      bucket: pipeline-artifacts
+      host: minio.mlb-agent.svc.cluster.local:9000
+      port: ""
+      scheme: http
+      s3CredentialsSecret:
+        accessKey: AWS_ACCESS_KEY_ID
+        secretKey: AWS_SECRET_ACCESS_KEY
+        secretName: pipeline-s3-credentials

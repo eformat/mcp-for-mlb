@@ -8,7 +8,7 @@ PLATFORM     ?= linux/amd64
 NAMESPACE    ?= mlb-agent
 
 .PHONY: help all build push deploy-all deploy-agent deploy-mcp restart status \
-	load-data set-model register-prompt spicedb-seed \
+	load-data lakehouse-summary set-model register-prompt spicedb-seed \
 	fix-dspa-charset eval-compile eval-submit eval-status
 
 help: ## Show this help
@@ -49,6 +49,9 @@ status: ## Show pods and routes
 # ── Data ──────────────────────────────────────────────────
 load-data: ## Load data into Trino: make load-data [DATASET=all|baseball|weather|pitch|live|upload]
 	./scripts/load-data.sh $(DATASET)
+
+lakehouse-summary: ## Show tables and row counts in the lakehouse
+	./scripts/lakehouse-summary.sh
 
 DATASET ?= all
 

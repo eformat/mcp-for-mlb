@@ -40,11 +40,6 @@ PARQUET_PREFIX = "parquet"
 
 COLUMN_RENAMES = {"2B": "doubles", "3B": "triples"}
 
-BOM_STRIP = {
-    "﻿ID": "ID",
-    "﻿yearID": "yearID",
-    "﻿schoolID": "schoolID",
-}
 
 TABLES = {
     "AllstarFull":        {"table": "allstar_full",        "integers": ["yearID","gameNum","GP","startingPos"]},
@@ -125,7 +120,6 @@ def load_table(csv_name, spec, minio_client, staging_cur, lakehouse_cur, tmpdir)
 
     # 1. Read CSV
     df = pd.read_csv(csv_path, encoding="utf-8-sig", low_memory=False)
-    df.columns = [BOM_STRIP.get(c, c) for c in df.columns]
     df.rename(columns=COLUMN_RENAMES, inplace=True)
 
     # Pandas reads int columns with NaN as float — that's fine, Parquet handles it.

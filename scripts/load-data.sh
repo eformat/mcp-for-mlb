@@ -9,6 +9,7 @@
 #   ./scripts/load-data.sh weather      # Load only weather
 #   ./scripts/load-data.sh pitch        # Load only pitch
 #   ./scripts/load-data.sh live         # Load only live 2026 season
+#   ./scripts/load-data.sh predictions  # Load prediction history from Chainlit
 #   ./scripts/load-data.sh upload       # Upload raw CSVs to MinIO
 #
 set -euo pipefail
@@ -56,6 +57,15 @@ case "$DATASET" in
     live)
         CACHE_DIR="${REPO_DIR}/data/live" $PYTHON "${REPO_DIR}/scripts/load-live-trino.py"
         ;;
+    predictions)
+        POD=$(oc get pods -n "$NAMESPACE" -l app.kubernetes.io/name=mlb-agent \
+              -o jsonpath='{.items[0].metadata.name}')
+        mkdir -p "${REPO_DIR}/data/predictions"
+        echo "Copying chainlit.db from pod ${POD}..."
+        oc cp "${NAMESPACE}/${POD}:/app/data/chainlit.db" "${REPO_DIR}/data/predictions/chainlit.db"
+        CHAINLIT_DB="${REPO_DIR}/data/predictions/chainlit.db" \
+            $PYTHON "${REPO_DIR}/scripts/load-predictions-trino.py"
+        ;;
     upload)
         $PYTHON "${REPO_DIR}/scripts/upload-data-minio.py"
         ;;
@@ -68,7 +78,7 @@ case "$DATASET" in
         ;;
     *)
         echo "Unknown dataset: $DATASET"
-        echo "Usage: $0 [all|baseball|weather|pitch|live|upload]"
+        echo "Usage: $0 [all|baseball|weather|pitch|live|predictions|upload]"
         exit 1
         ;;
 esac

@@ -33,6 +33,8 @@ _DATASET_ALIASES = {
     "weather": "weather", "temperature": "weather",
     "parks": "parks", "stadiums": "parks", "ballparks": "parks",
     "postseason": "postseason", "playoffs": "postseason", "world series": "postseason",
+    "predictions": "predictions", "prediction history": "predictions",
+    "my picks": "predictions", "accuracy": "predictions", "track record": "predictions",
 }
 
 
@@ -70,6 +72,7 @@ def query_trino(sql: str) -> str:
     - live_plays (game_pk, batter_name, pitcher_name, event, event_type, rbi, is_scoring_play) — play-by-play
     - live_pitches (game_pk, pitch_type, start_speed, spin_rate, plate_x, plate_z, is_strike) — 2026 pitches
     - live_standings (team_name, wins, losses, winning_pct, games_back, division_name, streak) — current standings
+    - prediction_history (prediction_id, game_date, away_team, home_team, picked_team, confidence, actual_winner, was_correct) — agent prediction history with outcomes
 
     Computed stats (not stored):
     - AVG = CAST(H AS DOUBLE)/NULLIF(AB,0)

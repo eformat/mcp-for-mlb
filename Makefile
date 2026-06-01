@@ -8,7 +8,7 @@ PLATFORM     ?= linux/amd64
 NAMESPACE    ?= mlb-agent
 
 .PHONY: help all build push deploy-all deploy-agent deploy-mcp restart status \
-	load-data lakehouse-summary set-model register-prompt spicedb-seed \
+	load-data lakehouse-summary check-games set-model register-prompt spicedb-seed \
 	fix-dspa-charset eval-compile eval-submit eval-status
 
 help: ## Show this help
@@ -47,13 +47,20 @@ status: ## Show pods and routes
 	@echo "" && echo "=== Routes ===" && oc get routes -n $(NAMESPACE) -o custom-columns='NAME:.metadata.name,HOST:.spec.host' --no-headers
 
 # ── Data ──────────────────────────────────────────────────
-load-data: ## Load data into Trino: make load-data [DATASET=all|baseball|weather|pitch|live|upload]
+load-data: ## Load data into Trino: make load-data [DATASET=all|baseball|weather|pitch|live|predictions|upload]
 	./scripts/load-data.sh $(DATASET)
+
+load-predictions: ## Load prediction history from Chainlit into lakehouse
+	./scripts/load-data.sh predictions
 
 lakehouse-summary: ## Show tables and row counts in the lakehouse
 	./scripts/lakehouse-summary.sh
 
+check-games: ## Check game statuses: make check-games [DATE=2026-05-28]
+	@./scripts/check-games.sh $(DATE)
+
 DATASET ?= all
+DATE    ?=
 
 # ── Config ────────────────────────────────────────────────
 MAAS_BASE_URL ?= http://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas
@@ -70,7 +77,10 @@ register-prompt: ## Register system_prompt.md in MLflow: make register-prompt PR
 	@./scripts/register-prompt.sh "$(PROMPT_MSG)"
 
 spicedb-seed: ## Seed SpiceDB with schema and relationships
-	python3 agents/mlb-agent/spicedb/seed_relationships.py
+	@bash -c 'POD=$$(oc get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=dev-spicedb -o jsonpath="{.items[0].metadata.name}") && \
+	oc port-forward pod/$$POD -n $(NAMESPACE) 50051:50051 &>/dev/null & PF=$$!; \
+	sleep 3 && python3 agents/mlb-agent/spicedb/seed_relationships.py; RC=$$?; \
+	kill $$PF 2>/dev/null; exit $$RC'
 
 # ── Evaluation ────────────────────────────────────────────
 fix-dspa-charset: ## Fix DSPA MariaDB charset to utf8mb4 (required for KFP)

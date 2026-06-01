@@ -134,6 +134,48 @@ from chainlit.data.sql_alchemy import SQLAlchemyDataLayer
 cl.data._data_layer = SQLAlchemyDataLayer(conninfo=_DB_CONNINFO)
 
 
+def _trim_context(state):
+    """Shrink old messages to prevent context overflow.
+
+    Never adds, removes, or reorders messages — just replaces content.
+    Tool_call/ToolMessage pairs stay perfectly matched.
+    Old ToolMessages get "[t]", old AI tool_calls get single-char args,
+    old AI text gets truncated hard. Only last 6 messages keep full content.
+    """
+    msgs = state.get("messages", [])
+    if len(msgs) <= 10:
+        return {"llm_input_messages": msgs}
+
+    from langchain_core.messages import ToolMessage
+
+    trimmed = list(msgs)
+    cutoff = len(trimmed) - 6
+
+    for i in range(cutoff):
+        m = trimmed[i]
+        mtype = getattr(m, "type", None)
+
+        if mtype == "tool" and len(getattr(m, "content", "") or "") > 10:
+            trimmed[i] = ToolMessage(
+                content="ok",
+                tool_call_id=m.tool_call_id,
+                name=getattr(m, "name", None),
+            )
+        elif mtype == "ai":
+            tool_calls = getattr(m, "tool_calls", None)
+            if tool_calls:
+                trimmed[i] = AIMessage(
+                    content="",
+                    tool_calls=[{"name": tc["name"], "args": {},
+                                 "id": tc["id"], "type": "tool_call"}
+                                for tc in tool_calls],
+                )
+            elif len(getattr(m, "content", "") or "") > 100:
+                trimmed[i] = AIMessage(content="[prior batch complete]")
+
+    return {"llm_input_messages": trimmed}
+
+
 def _build_agent(username: str = "anonymous"):
     """Create a LangGraph ReAct agent with tool-calling support."""
     llm = ChatOpenAI(
@@ -144,6 +186,7 @@ def _build_agent(username: str = "anonymous"):
         temperature=0.3,
         max_tokens=8192,
         streaming=False,
+        timeout=300,
         model_kwargs={
             "extra_body": {
                 "chat_template_kwargs": {"enable_thinking": False}
@@ -157,6 +200,7 @@ def _build_agent(username: str = "anonymous"):
         model=llm,
         tools=TOOLS,
         prompt=prompt,
+        pre_model_hook=_trim_context,
     )
 
 

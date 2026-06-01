@@ -90,6 +90,12 @@ _DATASET_ALIASES = {
     "boxscore": "live",
     "box score": "live",
     "current": "live",
+    "predictions": "predictions",
+    "prediction history": "predictions",
+    "my picks": "predictions",
+    "accuracy": "predictions",
+    "track record": "predictions",
+    "self-learning": "predictions",
 }
 
 _METHODOLOGY = {
@@ -401,6 +407,30 @@ _METHODOLOGY = {
         "temporal_resolution": "Per-game, per-play, per-pitch",
         "update_frequency": "Refreshed on demand (make load-live)",
     },
+    "predictions": {
+        "collection_design": (
+            "Agent prediction history extracted from Chainlit chat sessions. "
+            "Predictions are parsed from structured agent output (Pick/Confidence format) "
+            "and matched against actual game results from live_games."
+        ),
+        "data_scope": (
+            "Table: prediction_history — one row per game prediction. Includes "
+            "the picked team, confidence tier (STRONG/LEAN/COIN FLIP), pitcher names, "
+            "reasoning summary, and outcome (was_correct: 1=right, 0=wrong, NULL=pending)."
+        ),
+        "key_columns": (
+            "prediction_id, game_date, away_team, home_team, picked_team, confidence, "
+            "away_pitcher, home_pitcher, actual_winner, was_correct, away_score, home_score"
+        ),
+        "known_biases": [
+            "Older predictions (before structured format) may have NULL confidence and pitcher fields",
+            "Team name matching is fuzzy — some predictions may not match to game results",
+            "was_correct is NULL for games not yet played or not found in live_games",
+        ],
+        "geographic_resolution": "Team level",
+        "temporal_resolution": "Per-game prediction",
+        "update_frequency": "Refreshed on demand (make load-predictions)",
+    },
 }
 
 
@@ -700,6 +730,17 @@ async def describe_datasets(topic: str = "") -> dict:
                 "Pitches include Statcast velocity, spin rate, movement data",
             ],
             "join_with": "All live tables join on game_pk. Player names embedded in each table.",
+        },
+        "predictions": {
+            "tables": ["prediction_history"],
+            "years_available": "2026 season (current)",
+            "key_features": [
+                "Agent's own prediction history with outcomes",
+                "Each row = one game prediction: picked_team, confidence (STRONG/LEAN/COIN FLIP), was_correct (1/0/NULL)",
+                "Matched to live_games results: actual_winner, away_score, home_score",
+                "Use for self-learning: accuracy by confidence tier, team-specific biases",
+            ],
+            "join_with": "live_games (via game_pk or game_date + team names)",
         },
     }
 

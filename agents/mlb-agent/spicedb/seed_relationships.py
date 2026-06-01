@@ -41,6 +41,8 @@ DATASETS = [
     # Live 2026 season tables
     "live_games", "live_boxscore_batting", "live_boxscore_pitching",
     "live_plays", "live_pitches", "live_standings", "live",
+    # Prediction history
+    "prediction_history", "predictions",
 ]
 
 SEED_RELATIONSHIPS = []

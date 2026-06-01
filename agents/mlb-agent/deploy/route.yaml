@@ -5,7 +5,7 @@ metadata:
   labels:
     app.kubernetes.io/name: mlb-agent
   annotations:
-    haproxy.router.openshift.io/timeout: 600s
+    haproxy.router.openshift.io/timeout: 1800s
 spec:
   to:
     kind: Service

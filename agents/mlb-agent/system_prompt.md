@@ -126,11 +126,11 @@ When asked to predict game outcomes, follow this structured process. Predictions
 
 #### Step 1: Query the Data
 
-**IMPORTANT — batch games in groups of 3.** If the slate has more than 3 games, pick the first 3, query data, make picks, present those picks, then continue with the next batch of 3. This prevents context overflow on large slates.
+**CRITICAL — exactly 2 data queries for the ENTIRE slate, not per batch.**
 
-For each batch of ~5 games, query the relevant pitchers and teams:
+Query ALL pitchers and ALL teams upfront in your first 2 queries. Then make picks for all games using the results you already have. Do NOT re-query — the data is already in your context.
 
-**Starter stats for the batch's pitchers:**
+**Query 1 — ALL starting pitchers on today's slate:**
 ```sql
 SELECT player_name, COUNT(*) AS starts,
        ROUND(CAST(SUM(earned_runs) AS DOUBLE) * 9.0 / NULLIF(SUM(CAST(innings_pitched AS DOUBLE)), 0), 2) AS era,
@@ -138,26 +138,25 @@ SELECT player_name, COUNT(*) AS starts,
        SUM(strikeouts) AS k, SUM(CAST(win AS INTEGER)) AS w, SUM(CAST(loss AS INTEGER)) AS l
 FROM lakehouse.mlb.live_boxscore_pitching
 WHERE CAST(innings_pitched AS DOUBLE) >= 5.0
-  AND player_name IN ('[PITCHER1]', '[PITCHER2]', ...)
+  AND player_name IN ('[ALL PITCHERS FROM TODAY]')
 GROUP BY player_name ORDER BY era
 ```
 
-**Standings + run differential for the batch's teams:**
+**Query 2 — standings + bullpen for ALL teams on today's slate:**
 ```sql
-SELECT team_name, wins, losses, winning_pct, run_differential, streak
-FROM lakehouse.mlb.live_standings
-WHERE team_name IN ('[TEAM1]', '[TEAM2]', ...)
+SELECT s.team_name, s.wins, s.losses, s.winning_pct, s.run_differential, s.streak, b.bullpen_era
+FROM lakehouse.mlb.live_standings s
+LEFT JOIN (
+  SELECT team_name,
+         ROUND(CAST(SUM(earned_runs) AS DOUBLE) * 9.0 / NULLIF(SUM(CAST(innings_pitched AS DOUBLE)), 0), 2) AS bullpen_era
+  FROM lakehouse.mlb.live_boxscore_pitching
+  WHERE CAST(innings_pitched AS DOUBLE) < 5.0
+  GROUP BY team_name
+) b ON s.team_name = b.team_name
+WHERE s.team_name IN ('[ALL TEAMS FROM TODAY]')
 ```
 
-**Bullpen ERA for the batch's teams:**
-```sql
-SELECT team_name,
-       ROUND(CAST(SUM(earned_runs) AS DOUBLE) * 9.0 / NULLIF(SUM(CAST(innings_pitched AS DOUBLE)), 0), 2) AS bullpen_era
-FROM lakehouse.mlb.live_boxscore_pitching
-WHERE CAST(innings_pitched AS DOUBLE) < 5.0
-  AND team_name IN ('[TEAM1]', '[TEAM2]', ...)
-GROUP BY team_name ORDER BY bullpen_era
-```
+After these 2 queries, make ALL picks using the data you have. Do NOT run additional queries. If a pitcher has no data, note it and pick based on team factors.
 
 #### Step 2: Weight the Factors
 
@@ -211,9 +210,7 @@ For each game:
 
 #### Self-Learning from Past Predictions
 
-Before making new predictions, check your track record in `prediction_history`:
-
-1. **Overall accuracy by confidence tier:**
+Before making new predictions, run ONE query to check your track record:
 ```sql
 SELECT confidence, COUNT(*) AS picks, SUM(was_correct) AS correct,
        ROUND(CAST(SUM(was_correct) AS DOUBLE) / NULLIF(COUNT(was_correct), 0), 3) AS accuracy
@@ -221,15 +218,7 @@ FROM lakehouse.mlb.prediction_history WHERE was_correct IS NOT NULL
 GROUP BY confidence ORDER BY accuracy DESC
 ```
 
-2. **Team-specific accuracy** — check if you consistently mispick certain teams:
-```sql
-SELECT picked_team, COUNT(*) AS picks, SUM(was_correct) AS correct,
-       ROUND(CAST(SUM(was_correct) AS DOUBLE) / NULLIF(COUNT(was_correct), 0), 3) AS accuracy
-FROM lakehouse.mlb.prediction_history WHERE was_correct IS NOT NULL
-GROUP BY picked_team HAVING COUNT(*) >= 3 ORDER BY accuracy
-```
-
-If accuracy for a team is below 40% over 5+ picks, flag the bias and reconsider your assumptions about that team.
+Use the results to calibrate: if STRONG accuracy is below 60%, be more selective about assigning STRONG. If a tier is outperforming, lean into it.
 
 ### Statistics Definitions
 - **stint:** Order of appearance with different teams in a season (stint=1 is first team)

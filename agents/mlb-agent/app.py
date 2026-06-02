@@ -7,6 +7,7 @@ Trino SQL data access, and full MLflow tracing.
 import os
 import re
 import time
+import httpx
 
 import mlflow_init
 mlflow_init.init()
@@ -143,13 +144,13 @@ def _trim_context(state):
     old AI text gets truncated hard. Only last 6 messages keep full content.
     """
     msgs = state.get("messages", [])
-    if len(msgs) <= 10:
+    if len(msgs) <= 7:
         return {"llm_input_messages": msgs}
 
     from langchain_core.messages import ToolMessage
 
     trimmed = list(msgs)
-    cutoff = len(trimmed) - 6
+    cutoff = len(trimmed) - 5
 
     for i in range(cutoff):
         m = trimmed[i]
@@ -186,7 +187,10 @@ def _build_agent(username: str = "anonymous"):
         temperature=0.3,
         max_tokens=8192,
         streaming=False,
-        timeout=300,
+        timeout=httpx.Timeout(connect=120.0, read=900.0, write=120.0, pool=120.0),
+        max_retries=10,
+        http_client=httpx.Client(timeout=httpx.Timeout(connect=120.0, read=900.0, write=120.0, pool=120.0)),
+        http_socket_options=(),
         model_kwargs={
             "extra_body": {
                 "chat_template_kwargs": {"enable_thinking": False}

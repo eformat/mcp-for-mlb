@@ -2,3 +2,6 @@ trino>=0.329
 pandas>=2.0
 pyarrow>=15.0
 minio>=7.0
+mlflow>=2.18
+kfp>=2.16
+kfp-kubernetes>=1.4

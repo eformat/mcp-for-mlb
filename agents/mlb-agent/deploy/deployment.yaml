@@ -25,7 +25,7 @@ spec:
             - name: MODEL_NAME
               value: "qwen36-27b"
             - name: MODEL_ENDPOINT
-              value: "http://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen36-27b/v1"
+              value: "https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen36-27b/v1"
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:
@@ -58,6 +58,8 @@ spec:
                 secretKeyRef:
                   name: dev-spicedb-config
                   key: preshared_key
+            - name: AGENT_RECURSION_LIMIT
+              value: "200"
           resources:
             requests:
               cpu: 200m

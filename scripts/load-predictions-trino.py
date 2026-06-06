@@ -494,7 +494,7 @@ def main():
             continue
 
         for pred in preds:
-            dedup_key = (row["thread_id"], pred["away_team"], pred["home_team"])
+            dedup_key = (game_date, pred["away_team"], pred["home_team"])
 
             # Keep the version with the most data (confidence populated wins)
             existing = raw_records.get(dedup_key)

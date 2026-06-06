@@ -182,11 +182,11 @@ def _build_agent(username: str = "anonymous"):
     llm = ChatOpenAI(
         model=os.environ.get("MODEL_NAME", "qwen36-27b"),
         base_url=os.environ.get("MODEL_ENDPOINT",
-            "http://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen36-27b/v1"),
+            "https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen36-27b/v1"),
         api_key=os.environ.get("OPENAI_API_KEY", "not-required"),
         temperature=0.3,
         max_tokens=8192,
-        streaming=False,
+        streaming=True,
         timeout=httpx.Timeout(connect=120.0, read=900.0, write=120.0, pool=120.0),
         max_retries=10,
         http_client=httpx.Client(timeout=httpx.Timeout(connect=120.0, read=900.0, write=120.0, pool=120.0)),
@@ -335,6 +335,8 @@ async def on_message(message: cl.Message):
     import asyncio
 
     def _run_agent():
+        from langgraph.errors import GraphRecursionError
+
         try:
             import mlflow
 
@@ -350,7 +352,7 @@ async def on_message(message: cl.Message):
 
                     result = agent.invoke(
                         {"messages": messages},
-                        config={"callbacks": [handler]},
+                        config={"callbacks": [handler], "recursion_limit": int(os.environ.get("AGENT_RECURSION_LIMIT", "200"))},
                     )
 
                     if ("query_trino" in handler.tool_names
@@ -360,16 +362,18 @@ async def on_message(message: cl.Message):
                         handler.tool_names.clear()
                         result = agent.invoke(
                             {"messages": retry_messages},
-                            config={"callbacks": [handler]},
+                            config={"callbacks": [handler], "recursion_limit": int(os.environ.get("AGENT_RECURSION_LIMIT", "200"))},
                         )
 
                     span.set_outputs({"done": True})
 
                 return result
+        except GraphRecursionError:
+            return {"messages": [AIMessage(content="I've reached the maximum number of steps for this query. Please start a new chat for follow-up questions after a large prediction run.")]}
         except Exception:
             return agent.invoke(
                 {"messages": messages},
-                config={"callbacks": [handler]},
+                config={"callbacks": [handler], "recursion_limit": int(os.environ.get("AGENT_RECURSION_LIMIT", "200"))},
             )
 
     async with cl.Step(name="Query MLB data...", type="run") as step:
@@ -389,6 +393,11 @@ async def on_message(message: cl.Message):
         if hasattr(m, "type") and m.type == "ai" and not getattr(m, "tool_calls", None):
             raw_output = m.content or ""
             break
+
+    if not raw_output:
+        # Debug: log what messages we got
+        msg_types = [(getattr(m, "type", "?"), len(getattr(m, "content", "") or ""), bool(getattr(m, "tool_calls", None))) for m in result.get("messages", [])[-10:]]
+        print(f"[DEBUG] No raw_output found. Last 10 msgs: {msg_types}", flush=True)
 
     answer, reasoning = _clean_output(raw_output)
 

@@ -63,7 +63,7 @@ DATASET ?= all
 DATE    ?=
 
 # ── Config ────────────────────────────────────────────────
-MAAS_BASE_URL ?= http://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas
+MAAS_BASE_URL ?= https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas
 AGENT_MODEL   ?= qwen36-27b
 PROMPT_MSG    ?= Prompt update
 

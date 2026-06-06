@@ -126,11 +126,9 @@ When asked to predict game outcomes, follow this structured process. Predictions
 
 #### Step 1: Query the Data
 
-**CRITICAL — exactly 2 data queries for the ENTIRE slate, not per batch.**
+**Process games in batches of 3.** For each batch, run 3 targeted queries with all pitchers/teams for that batch in IN clauses. Make picks for those 3 games, then move to the next batch.
 
-Query ALL pitchers and ALL teams upfront in your first 2 queries. Then make picks for all games using the results you already have. Do NOT re-query — the data is already in your context.
-
-**Query 1 — ALL starting pitchers on today's slate:**
+**Query 1 — Starter stats for the batch's pitchers:**
 ```sql
 SELECT player_name, COUNT(*) AS starts,
        ROUND(CAST(SUM(earned_runs) AS DOUBLE) * 9.0 / NULLIF(SUM(CAST(innings_pitched AS DOUBLE)), 0), 2) AS era,
@@ -138,36 +136,60 @@ SELECT player_name, COUNT(*) AS starts,
        SUM(strikeouts) AS k, SUM(CAST(win AS INTEGER)) AS w, SUM(CAST(loss AS INTEGER)) AS l
 FROM lakehouse.mlb.live_boxscore_pitching
 WHERE CAST(innings_pitched AS DOUBLE) >= 5.0
-  AND player_name IN ('[ALL PITCHERS FROM TODAY]')
+  AND player_name IN ('[PITCHER1]', '[PITCHER2]', ...)
 GROUP BY player_name ORDER BY era
 ```
 
-**Query 2 — standings + bullpen for ALL teams on today's slate:**
+**Query 2 — Standings + bullpen + recent team offense for the batch's teams:**
 ```sql
-SELECT s.team_name, s.wins, s.losses, s.winning_pct, s.run_differential, s.streak, b.bullpen_era
+SELECT s.team_name, s.wins, s.losses, s.winning_pct, s.run_differential, s.streak,
+       b.bullpen_era, o.rpg AS recent_runs_per_game
 FROM lakehouse.mlb.live_standings s
 LEFT JOIN (
   SELECT team_name,
          ROUND(CAST(SUM(earned_runs) AS DOUBLE) * 9.0 / NULLIF(SUM(CAST(innings_pitched AS DOUBLE)), 0), 2) AS bullpen_era
-  FROM lakehouse.mlb.live_boxscore_pitching
-  WHERE CAST(innings_pitched AS DOUBLE) < 5.0
+  FROM lakehouse.mlb.live_boxscore_pitching WHERE CAST(innings_pitched AS DOUBLE) < 5.0
   GROUP BY team_name
 ) b ON s.team_name = b.team_name
-WHERE s.team_name IN ('[ALL TEAMS FROM TODAY]')
+LEFT JOIN (
+  SELECT team_name, ROUND(AVG(runs), 1) AS rpg FROM (
+    SELECT b.team_name,
+           CASE WHEN g.home_team_name = b.team_name THEN g.home_score ELSE g.away_score END AS runs,
+           ROW_NUMBER() OVER (PARTITION BY b.team_name ORDER BY g.game_date DESC) AS rn
+    FROM lakehouse.mlb.live_boxscore_batting b
+    JOIN lakehouse.mlb.live_games g ON b.game_pk = g.game_pk
+    GROUP BY b.team_name, g.game_pk, g.game_date, g.home_team_name, g.home_score, g.away_score
+  ) WHERE rn <= 10 GROUP BY team_name
+) o ON s.team_name = o.team_name
+WHERE s.team_name IN ('[TEAM1]', '[TEAM2]', ...)
 ```
 
-After these 2 queries, make ALL picks using the data you have. Do NOT run additional queries. If a pitcher has no data, note it and pick based on team factors.
+**Query 3 — Head-to-head record this season for the batch's matchups:**
+```sql
+SELECT away_team_name, home_team_name,
+       COUNT(*) AS games,
+       SUM(CASE WHEN CAST(home_score AS INTEGER) > CAST(away_score AS INTEGER) THEN 1 ELSE 0 END) AS home_wins,
+       SUM(CASE WHEN CAST(away_score AS INTEGER) > CAST(home_score AS INTEGER) THEN 1 ELSE 0 END) AS away_wins
+FROM lakehouse.mlb.live_games
+WHERE game_status = 'Final'
+  AND ((away_team_name = '[TEAM_A]' AND home_team_name = '[TEAM_B]')
+    OR (away_team_name = '[TEAM_B]' AND home_team_name = '[TEAM_A]'))
+GROUP BY away_team_name, home_team_name
+```
+
+After querying, make picks for the batch, then continue with the next 3 games. If a pitcher has no data, note it and pick based on team factors.
 
 #### Step 2: Weight the Factors
 
 | Priority | Factor | Weight | Notes |
 |----------|--------|--------|-------|
-| 1 | **Starting pitcher quality** | ~40% | Compare last 5 starts: ERA, WHIP, K rate, innings depth. Sub-3.00 vs above-5.00 is the strongest signal. |
-| 2 | **Team offensive output** | ~25% | Runs/game over last 10. Hot-hitting team vs weak starter amplifies pitching gap. |
+| 1 | **Starting pitcher quality** | ~35% | Compare ERA, WHIP, K rate from season starts. Sub-3.00 vs above-5.00 is the strongest signal. |
+| 2 | **Team recent offense** | ~20% | Runs/game over last 10 games. A team scoring 6+ rpg vs one scoring 3 rpg is significant. |
 | 3 | **Bullpen ERA** | ~15% | Matters most when starters are comparable. Bad bullpen erases a starter's edge. |
-| 4 | **Run differential** | ~10% | Better than W-L for true team quality. +50 vs -30 is meaningful. |
-| 5 | **Home field advantage** | ~5% | Real but small (~53-54% historically). NEVER use as tiebreaker when pitching data is clear. |
-| 6 | **Streaks / momentum** | ~0% | Noise. A 3-game win streak does not predict game 4. |
+| 4 | **Head-to-head record** | ~10% | Season series record between these teams. 4-1 head-to-head is meaningful; 1-1 is noise. |
+| 5 | **Run differential** | ~10% | Better than W-L for true team quality. +50 vs -30 is meaningful. |
+| 6 | **Home field advantage** | ~5% | Real but small (~53-54% historically). NEVER use as tiebreaker when pitching data is clear. |
+| 7 | **Streaks / momentum** | ~5% | Minor factor. Only consider 5+ game streaks; shorter streaks are noise. |
 
 #### Step 3: Decision Rules
 
@@ -179,6 +201,7 @@ After these 2 queries, make ALL picks using the data you have. Do NOT run additi
 6. **Use run differential, not W-L record.** A 25-25 team at +40 run diff is better than a 30-20 team at -10.
 7. **Default to LEAN, not STRONG.** Most picks should be LEAN. STRONG is reserved for dominant mismatches — don't force it.
 8. **Bullpen ERA is a STRONG-breaker.** Before assigning STRONG, check both bullpens. If the picked team's bullpen ERA is worse than the opponent's, downgrade to LEAN — a starter's edge gets erased in the late innings.
+9. **Unknown pitchers = COIN FLIP max.** If either starter is listed as Undecided, TBD, or has zero qualifying starts in the data, cap confidence at COIN FLIP. You cannot be confident about a game when you don't know who's pitching.
 
 #### Step 4: Output Format
 
@@ -190,13 +213,13 @@ For each game:
 - [Most important factor, usually pitching]
 - [Second factor]
 - [Third if relevant]
-**Pick: [TEAM NAME]** ← ALWAYS pick a team, even on coin flips. Never put "COIN FLIP" as the pick.
+**Pick: [TEAM NAME]** ← ALWAYS pick a team, even on coin flips. Never put "COIN FLIP" as the pick. Make exactly ONE pick per game — never revisit a game already picked.
 **Confidence: [STRONG / LEAN / COIN FLIP]**
 [One sentence why]
 ```
 
 **Confidence tiers:**
-- **STRONG**: Requires ALL of: (1) pitching edge of 1.75+ ERA gap, (2) picked team's bullpen ERA is not worse than opponent's, (3) no extreme offensive mismatch going the other way. Use sparingly — most picks should be LEAN.
+- **STRONG**: Requires ALL of: (1) pitching edge of 2.0+ ERA gap, (2) BOTH pitchers are known (not Undecided/TBD), (3) picked team's bullpen ERA ≤ opponent's, (4) picked team has positive run differential. If ANY condition fails, downgrade to LEAN. Use very sparingly.
 - **LEAN**: The default tier. Moderate pitching edge OR pitching close but one team has better offense/bullpen/run differential.
 - **COIN FLIP**: Both pitchers struggling, both elite, or factors point opposite directions. Still pick a team — just flag the uncertainty.
 
@@ -207,6 +230,8 @@ For each game:
 - Pick against a dominant pitcher because their team has a worse record
 - Assign STRONG confidence when both starters have ERA > 4.50 or both < 3.00
 - Put "COIN FLIP" as the Pick — COIN FLIP is a confidence level, not a team. Always pick a team name.
+- Assign STRONG or LEAN when either pitcher is Undecided, TBD, or has zero qualifying starts
+- Pick the same game twice — make exactly ONE pick per game, never revisit
 
 #### Self-Learning from Past Predictions
 

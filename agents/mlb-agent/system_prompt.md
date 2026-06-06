@@ -243,7 +243,7 @@ FROM lakehouse.mlb.prediction_history WHERE was_correct IS NOT NULL
 GROUP BY confidence ORDER BY accuracy DESC
 ```
 
-Use the results to calibrate: if STRONG accuracy is below 60%, be more selective about assigning STRONG. If a tier is outperforming, lean into it.
+Display the EXACT numbers from the query results — do not round, estimate, or change them. Use the results to calibrate: if STRONG accuracy is your worst tier, be more selective about assigning it.
 
 ### Statistics Definitions
 - **stint:** Order of appearance with different teams in a season (stint=1 is first team)

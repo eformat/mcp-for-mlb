@@ -59,7 +59,7 @@ spec:
                   name: dev-spicedb-config
                   key: preshared_key
             - name: AGENT_RECURSION_LIMIT
-              value: "200"
+              value: "300"
           resources:
             requests:
               cpu: 200m

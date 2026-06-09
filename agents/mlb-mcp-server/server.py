@@ -34,6 +34,7 @@ _BLOCKED_SQL = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|MERGE|GRANT|REVOKE)\b",
     re.IGNORECASE,
 )
+_STRING_LITERAL = re.compile(r"'[^']*'")
 
 _DATASET_ALIASES = {
     "hitting": "batting",
@@ -524,7 +525,7 @@ async def query_trino(sql: str) -> dict:
     Args:
         sql: SQL query to execute. Must be SELECT only.
     """
-    if _BLOCKED_SQL.search(sql):
+    if _BLOCKED_SQL.search(_STRING_LITERAL.sub("''", sql)):
         return {
             "results": [],
             "error": "Only SELECT queries are allowed. Write operations are blocked.",

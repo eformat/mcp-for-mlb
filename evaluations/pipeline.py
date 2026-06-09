@@ -476,6 +476,7 @@ def run_eval_op(
     from trino.dbapi import connect as trino_connect
 
     BLOCKED_SQL = re.compile(r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE)\b", re.IGNORECASE)
+    STRING_LITERAL = re.compile(r"'[^']*'")
 
     @tool
     def query_trino(sql: str) -> str:
@@ -485,7 +486,7 @@ def run_eval_op(
         weather_daily, pitch_pitches, pitch_atbats, pitch_games, statcast_pitches,
         live_games, live_boxscore_batting, live_boxscore_pitching, live_plays,
         live_pitches, live_standings. Only SELECT allowed."""
-        if BLOCKED_SQL.search(sql):
+        if BLOCKED_SQL.search(STRING_LITERAL.sub("''", sql)):
             return json.dumps({"error": "Only SELECT queries allowed."})
         try:
             conn = trino_connect(host=trino_host, port=trino_port, user="admin", catalog="lakehouse", schema="mlb")

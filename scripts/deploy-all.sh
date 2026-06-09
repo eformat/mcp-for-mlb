@@ -15,6 +15,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 NAMESPACE="${NAMESPACE:-mlb-agent}"
+VENV="${REPO_DIR}/.venv"
 MAAS_API_KEY="${MAAS_API_KEY:-}"
 MAAS_BASE_URL="${MAAS_BASE_URL:-https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas}"
 
@@ -98,16 +99,29 @@ oc create secret generic mlb-agent-maas-key \
   -n "${NAMESPACE}" 2>/dev/null || echo "MAAS key secret already exists"
 
 # ── 6. Deploy SpiceDB ────────────────────────────────────────
-echo "==> 6. Deploying SpiceDB"
-oc apply -f "${REPO_DIR}/deploy/spicedb/" -n "${NAMESPACE}" 2>/dev/null || echo "SpiceDB resources applied"
+echo "==> 6. Installing SpiceDB operator"
+oc apply --server-side -f https://github.com/authzed/spicedb-operator/releases/latest/download/bundle.yaml
+oc apply -f "${REPO_DIR}/deploy/spicedb/operator-install.yaml"
+oc patch deployment spicedb-operator -n spicedb-operator --type=json \
+  --patch-file "${REPO_DIR}/deploy/spicedb/operator-memory-patch.yaml" 2>/dev/null || true
+echo "Waiting for SpiceDB operator..."
+oc rollout status deployment/spicedb-operator -n spicedb-operator --timeout=120s
 
-# Seed SpiceDB (requires port-forward)
-echo "Seeding SpiceDB (if available)..."
-oc port-forward svc/dev -n "${NAMESPACE}" 50051:50051 &
+echo "Deploying SpiceDB cluster..."
+oc apply --server-side -n "${NAMESPACE}" -f "${REPO_DIR}/deploy/spicedb/spicedb-cluster.yaml"
+
+echo "Waiting for SpiceDB pod..."
+sleep 15
+oc wait --for=condition=ready pod -l app.kubernetes.io/instance=dev-spicedb -n "${NAMESPACE}" --timeout=120s 2>/dev/null || sleep 15
+
+# Seed SpiceDB
+echo "Seeding SpiceDB..."
+POD=$(oc get pods -n "${NAMESPACE}" -l app.kubernetes.io/instance=dev-spicedb -o jsonpath='{.items[0].metadata.name}')
+oc port-forward "pod/${POD}" -n "${NAMESPACE}" 50051:50051 &>/dev/null &
 SPICEDB_PF_PID=$!
 sleep 3
 SPICEDB_ENDPOINT=localhost:50051 \
-  python3 "${REPO_DIR}/agents/mlb-agent/spicedb/seed_relationships.py" 2>/dev/null || echo "SpiceDB seed skipped"
+  "${VENV}/bin/python" "${REPO_DIR}/agents/mlb-agent/spicedb/seed_relationships.py" 2>/dev/null || echo "SpiceDB seed skipped"
 kill $SPICEDB_PF_PID 2>/dev/null || true
 
 # ── 7. Deploy RBAC ────────────────────────────────────────────

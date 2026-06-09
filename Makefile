@@ -86,7 +86,7 @@ register-prompt: ## Register system_prompt.md in MLflow: make register-prompt PR
 spicedb-seed: ## Seed SpiceDB with schema and relationships
 	@bash -c 'POD=$$(oc get pods -n $(NAMESPACE) -l app.kubernetes.io/instance=dev-spicedb -o jsonpath="{.items[0].metadata.name}") && \
 	oc port-forward pod/$$POD -n $(NAMESPACE) 50051:50051 &>/dev/null & PF=$$!; \
-	sleep 3 && python3 agents/mlb-agent/spicedb/seed_relationships.py; RC=$$?; \
+	sleep 3 && .venv/bin/python agents/mlb-agent/spicedb/seed_relationships.py; RC=$$?; \
 	kill $$PF 2>/dev/null; exit $$RC'
 
 # ── Evaluation ────────────────────────────────────────────

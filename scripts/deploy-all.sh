@@ -16,7 +16,7 @@ REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 NAMESPACE="${NAMESPACE:-mlb-agent}"
 MAAS_API_KEY="${MAAS_API_KEY:-}"
-MAAS_BASE_URL="${MAAS_BASE_URL:-http://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas}"
+MAAS_BASE_URL="${MAAS_BASE_URL:-https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas}"
 
 echo "============================================"
 echo "  MLB Data Agent — Full Deployment"
@@ -65,33 +65,31 @@ helm upgrade --install trino "${REPO_DIR}/deploy/trino-chart/trino" \
 
 # ── 4. Load data into Trino ──────────────────────────────────
 echo "==> 4. Loading data into Trino"
-oc port-forward svc/trino -n "${NAMESPACE}" 8090:8080 &
-PF_PID=$!
+oc port-forward svc/trino -n "${NAMESPACE}" 8090:8080 &>/dev/null &
+TRINO_PF_PID=$!
+oc port-forward svc/minio -n "${NAMESPACE}" 9000:9000 &>/dev/null &
+MINIO_PF_PID=$!
 sleep 5
 
+export TRINO_HOST=localhost TRINO_PORT=8090 MINIO_ENDPOINT=localhost:9000
+
 echo "Loading baseball data..."
-TRINO_HOST=localhost TRINO_PORT=8090 \
-  DATA_DIR="${REPO_DIR}/data/baseball" \
+DATA_DIR="${REPO_DIR}/data/baseball" \
   python3 "${REPO_DIR}/scripts/load-baseball-trino.py"
 
 echo "Loading weather data..."
-TRINO_HOST=localhost TRINO_PORT=8090 \
-  DATA_DIR="${REPO_DIR}/data/weather" \
+DATA_DIR="${REPO_DIR}/data/weather" \
   python3 "${REPO_DIR}/scripts/load-weather-trino.py"
 
 echo "Loading pitch data..."
-TRINO_HOST=localhost TRINO_PORT=8090 \
-  MINIO_ENDPOINT=localhost:9001 \
-  DATA_DIR="${REPO_DIR}/data/pitch" \
+DATA_DIR="${REPO_DIR}/data/pitch" \
   python3 "${REPO_DIR}/scripts/load-pitch-trino.py"
 
 echo "Loading live 2026 season data..."
-TRINO_HOST=localhost TRINO_PORT=8090 \
-  MINIO_ENDPOINT=localhost:9001 \
-  CACHE_DIR="${REPO_DIR}/data/live" \
+CACHE_DIR="${REPO_DIR}/data/live" \
   python3 "${REPO_DIR}/scripts/load-live-trino.py"
 
-kill $PF_PID 2>/dev/null || true
+kill $TRINO_PF_PID $MINIO_PF_PID 2>/dev/null || true
 
 # ── 5. Create secrets ─────────────────────────────────────────
 echo "==> 5. Creating secrets"

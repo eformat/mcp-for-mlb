@@ -53,6 +53,13 @@ load-data: ## Load data into Trino: make load-data [DATASET=all|baseball|weather
 load-predictions: ## Load prediction history from Chainlit into lakehouse
 	./scripts/load-data.sh predictions
 
+restore-history: ## Restore Chainlit chat history from data/predictions/chainlit.db
+	@POD=$$(oc get pods -n $(NAMESPACE) -l app.kubernetes.io/name=mlb-agent -o jsonpath='{.items[0].metadata.name}') && \
+	echo "Copying chainlit.db to $$POD..." && \
+	oc cp data/predictions/chainlit.db $(NAMESPACE)/$$POD:/app/data/chainlit.db && \
+	echo "Restarting agent..." && \
+	oc rollout restart deployment/mlb-agent -n $(NAMESPACE)
+
 lakehouse-summary: ## Show tables and row counts in the lakehouse
 	./scripts/lakehouse-summary.sh
 

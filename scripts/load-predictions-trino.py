@@ -49,6 +49,7 @@ MONTH_MAP = {
 TEAM_ALIASES = {
     "arizona diamondbacks": "Arizona Diamondbacks", "diamondbacks": "Arizona Diamondbacks", "d-backs": "Arizona Diamondbacks", "ari": "Arizona Diamondbacks", "az": "Arizona Diamondbacks",
     "atlanta braves": "Atlanta Braves", "braves": "Atlanta Braves", "atl": "Atlanta Braves",
+    "arizona d-backs": "Arizona Diamondbacks", "d-backs": "Arizona Diamondbacks",
     "baltimore orioles": "Baltimore Orioles", "orioles": "Baltimore Orioles", "o's": "Baltimore Orioles", "bal": "Baltimore Orioles",
     "boston red sox": "Boston Red Sox", "red sox": "Boston Red Sox", "bos": "Boston Red Sox",
     "chicago cubs": "Chicago Cubs", "cubs": "Chicago Cubs", "chc": "Chicago Cubs",
@@ -66,7 +67,7 @@ TEAM_ALIASES = {
     "minnesota twins": "Minnesota Twins", "twins": "Minnesota Twins", "min": "Minnesota Twins", "minnesota": "Minnesota Twins",
     "new york mets": "New York Mets", "mets": "New York Mets", "nym": "New York Mets",
     "new york yankees": "New York Yankees", "yankees": "New York Yankees", "nyy": "New York Yankees", "ny yankees": "New York Yankees",
-    "oakland athletics": "Oakland Athletics", "athletics": "Oakland Athletics", "a's": "Oakland Athletics", "oak": "Oakland Athletics", "oakland": "Oakland Athletics", "ath": "Oakland Athletics",
+    "oakland athletics": "Athletics", "athletics": "Athletics", "a's": "Athletics", "oak": "Athletics", "oakland": "Athletics", "ath": "Athletics",
     "philadelphia phillies": "Philadelphia Phillies", "phillies": "Philadelphia Phillies", "phi": "Philadelphia Phillies", "philadelphia": "Philadelphia Phillies",
     "pittsburgh pirates": "Pittsburgh Pirates", "pirates": "Pittsburgh Pirates", "pit": "Pittsburgh Pirates", "pittsburgh": "Pittsburgh Pirates",
     "san diego padres": "San Diego Padres", "padres": "San Diego Padres", "sd": "San Diego Padres", "san diego": "San Diego Padres",
@@ -101,6 +102,60 @@ def normalize_team(name):
     cleaned = re.sub(r'^\d+\.\s*', '', cleaned)
     cleaned = cleaned.strip()
     return TEAM_ALIASES.get(cleaned.lower(), cleaned)
+
+
+# Ambiguous city names that have two MLB teams.
+# These can't be resolved by alias alone — need matchup context.
+_AMBIGUOUS_CITIES = {
+    "new york": ("New York Yankees", "New York Mets"),
+    "chicago": ("Chicago Cubs", "Chicago White Sox"),
+    "los angeles": ("Los Angeles Dodgers", "Los Angeles Angels"),
+}
+
+# Division/league opponents that disambiguate. If the opponent is in the
+# same division/matchup pattern, pick the right team.
+_CITY_HINTS = {
+    # AL teams that distinguish which "New York" / "Chicago" / "LA"
+    "Tampa Bay Rays": {"new york": "New York Yankees", "chicago": "Chicago White Sox", "los angeles": "Los Angeles Angels"},
+    "Boston Red Sox": {"new york": "New York Yankees", "chicago": "Chicago White Sox"},
+    "Baltimore Orioles": {"new york": "New York Yankees", "chicago": "Chicago White Sox"},
+    "Toronto Blue Jays": {"new york": "New York Yankees", "chicago": "Chicago White Sox"},
+    "Minnesota Twins": {"new york": "New York Yankees", "chicago": "Chicago White Sox"},
+    "Cleveland Guardians": {"new york": "New York Yankees", "chicago": "Chicago White Sox"},
+    "Detroit Tigers": {"new york": "New York Yankees", "chicago": "Chicago White Sox"},
+    "Kansas City Royals": {"new york": "New York Yankees", "chicago": "Chicago White Sox"},
+    "Houston Astros": {"new york": "New York Yankees", "chicago": "Chicago White Sox", "los angeles": "Los Angeles Angels"},
+    "Texas Rangers": {"new york": "New York Yankees", "chicago": "Chicago White Sox", "los angeles": "Los Angeles Angels"},
+    "Seattle Mariners": {"new york": "New York Yankees", "chicago": "Chicago White Sox", "los angeles": "Los Angeles Angels"},
+    "Athletics": {"new york": "New York Yankees", "chicago": "Chicago White Sox", "los angeles": "Los Angeles Angels"},
+    # NL teams
+    "Atlanta Braves": {"new york": "New York Mets", "chicago": "Chicago Cubs", "los angeles": "Los Angeles Dodgers"},
+    "Philadelphia Phillies": {"new york": "New York Mets", "chicago": "Chicago Cubs", "los angeles": "Los Angeles Dodgers"},
+    "Miami Marlins": {"new york": "New York Mets", "chicago": "Chicago Cubs", "los angeles": "Los Angeles Dodgers"},
+    "Washington Nationals": {"new york": "New York Mets", "chicago": "Chicago Cubs", "los angeles": "Los Angeles Dodgers"},
+    "Milwaukee Brewers": {"new york": "New York Mets", "chicago": "Chicago Cubs", "los angeles": "Los Angeles Dodgers"},
+    "St. Louis Cardinals": {"new york": "New York Mets", "chicago": "Chicago Cubs", "los angeles": "Los Angeles Dodgers"},
+    "Cincinnati Reds": {"new york": "New York Mets", "chicago": "Chicago Cubs", "los angeles": "Los Angeles Dodgers"},
+    "Pittsburgh Pirates": {"new york": "New York Mets", "chicago": "Chicago Cubs", "los angeles": "Los Angeles Dodgers"},
+    "San Diego Padres": {"new york": "New York Mets", "chicago": "Chicago Cubs", "los angeles": "Los Angeles Dodgers"},
+    "San Francisco Giants": {"new york": "New York Mets", "chicago": "Chicago Cubs", "los angeles": "Los Angeles Dodgers"},
+    "Colorado Rockies": {"new york": "New York Mets", "chicago": "Chicago Cubs", "los angeles": "Los Angeles Dodgers"},
+    "Arizona Diamondbacks": {"new york": "New York Mets", "chicago": "Chicago Cubs", "los angeles": "Los Angeles Dodgers"},
+}
+
+
+def resolve_ambiguous(away, home):
+    """Resolve ambiguous city names using the opponent as context."""
+    for team_ref, team_val in [(away, home), (home, away)]:
+        if team_ref and team_ref.lower() in _AMBIGUOUS_CITIES:
+            if team_val in _CITY_HINTS:
+                resolved = _CITY_HINTS[team_val].get(team_ref.lower())
+                if resolved:
+                    if team_ref == away:
+                        away = resolved
+                    else:
+                        home = resolved
+    return away, home
 
 
 def extract_game_date(thread_name, created_at):
@@ -494,6 +549,8 @@ def main():
             continue
 
         for pred in preds:
+            pred["away_team"], pred["home_team"] = resolve_ambiguous(
+                pred["away_team"], pred["home_team"])
             dedup_key = (game_date, pred["away_team"], pred["home_team"])
 
             # Keep the version with the most data (confidence populated wins)

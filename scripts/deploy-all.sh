@@ -125,8 +125,14 @@ echo "==> 9. Deploying agent"
 oc apply -k "${REPO_DIR}/agents/mlb-agent/deploy" -n "${NAMESPACE}"
 oc rollout status deployment/mlb-agent -n "${NAMESPACE}" --timeout=120s
 
-# ── 10. Deploy pipeline server (DSPA) ─────────────────────────
-echo "==> 10. Deploying pipeline server"
+# ── 10. Deploy Trino Query UI ─────────────────────────────────
+echo "==> 10. Deploying Trino Query UI"
+helm upgrade --install trino-query-ui "${REPO_DIR}/deploy/trino-query-ui" \
+  -n "${NAMESPACE}" \
+  --wait --timeout 60s
+
+# ── 11. Deploy pipeline server (DSPA) ─────────────────────────
+echo "==> 11. Deploying pipeline server"
 oc apply -f "${REPO_DIR}/deploy/pipeline-s3-secret.yaml" -n "${NAMESPACE}"
 oc apply -f "${REPO_DIR}/deploy/dspa.yaml" -n "${NAMESPACE}"
 echo "Waiting for DSPA..."
@@ -134,7 +140,7 @@ sleep 30
 oc rollout status deployment/ds-pipeline-dspa -n "${NAMESPACE}" --timeout=120s
 "${REPO_DIR}/scripts/fix-dspa-charset.sh"
 
-# ── 11. Summary ───────────────────────────────────────────────
+# ── 12. Summary ───────────────────────────────────────────────
 echo ""
 echo "============================================"
 echo "  Deployment Complete"

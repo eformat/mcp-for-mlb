@@ -53,7 +53,7 @@ PARQUET_CACHE = os.path.join(CACHE_DIR, "parquet")
 
 TABLES = [
     "live_games", "live_boxscore_batting", "live_boxscore_pitching",
-    "live_plays", "live_pitches", "live_standings",
+    "live_plays", "live_pitches", "live_standings", "live_lineups", "live_elo",
 ]
 
 
@@ -154,7 +154,7 @@ def extract_game_row(g):
 
 
 def extract_from_feed(game_pk, feed):
-    batting_rows, pitching_rows, play_rows, pitch_rows = [], [], [], []
+    batting_rows, pitching_rows, play_rows, pitch_rows, lineup_rows = [], [], [], [], []
 
     game_data = feed.get("gameData", {})
     weather = game_data.get("weather", {})
@@ -280,7 +280,22 @@ def extract_from_feed(game_pk, feed):
                 "half_inning": about.get("halfInning", ""),
             })
 
-    return batting_rows, pitching_rows, play_rows, pitch_rows, weather_info
+    for side in ["away", "home"]:
+        team_data = boxscore.get(side, {})
+        batting_order = team_data.get("battingOrder", [])
+        for position, player_id in enumerate(batting_order, 1):
+            pid_key = f"ID{player_id}"
+            player_info = game_data.get("players", {}).get(pid_key, {})
+            lineup_rows.append({
+                "game_pk": game_pk,
+                "side": side,
+                "lineup_position": position,
+                "player_id": player_id,
+                "player_name": player_info.get("fullName", ""),
+                "primary_position": player_info.get("primaryPosition", {}).get("abbreviation", ""),
+            })
+
+    return batting_rows, pitching_rows, play_rows, pitch_rows, lineup_rows, weather_info
 
 
 def fetch_standings():
@@ -314,6 +329,53 @@ def fetch_standings():
                 "division_rank": tr.get("divisionRank", ""),
                 "league_rank": tr.get("leagueRank", ""),
             })
+    return pd.DataFrame(rows)
+
+
+def compute_elo_ratings(schedule_games):
+    """Compute ELO ratings from completed game results, chronologically."""
+    K = 6
+    HOME_ADV = 24
+
+    teams = set()
+    games = []
+    for g in schedule_games:
+        away = g["teams"]["away"]["team"]["name"]
+        home = g["teams"]["home"]["team"]["name"]
+        away_score = g["teams"]["away"].get("score")
+        home_score = g["teams"]["home"].get("score")
+        if away_score is None or home_score is None:
+            continue
+        teams.add(away)
+        teams.add(home)
+        games.append({
+            "date": g.get("officialDate", ""),
+            "away": away, "home": home,
+            "away_score": int(away_score), "home_score": int(home_score),
+        })
+
+    games.sort(key=lambda x: x["date"])
+    ratings = {t: 1500.0 for t in teams}
+    games_played = {t: 0 for t in teams}
+
+    for g in games:
+        ra, rh = ratings[g["away"]], ratings[g["home"]]
+        ea = 1.0 / (1.0 + 10.0 ** ((rh + HOME_ADV - ra) / 400.0))
+        sa = 1.0 if g["away_score"] > g["home_score"] else 0.0
+        mov = abs(g["away_score"] - g["home_score"])
+        mov_mult = max(1.0, (mov + 1) ** 0.3)
+        ratings[g["away"]] += K * mov_mult * (sa - ea)
+        ratings[g["home"]] += K * mov_mult * ((1 - sa) - (1 - ea))
+        games_played[g["away"]] += 1
+        games_played[g["home"]] += 1
+
+    rows = []
+    for team in sorted(teams):
+        rows.append({
+            "team_name": team,
+            "elo_rating": round(ratings[team], 1),
+            "games_played": games_played[team],
+        })
     return pd.DataFrame(rows)
 
 
@@ -465,7 +527,7 @@ def main():
     new_game_pks = set()
     for g in schedule_games:
         gpk = g["gamePk"]
-        if not _game_parquet_exists(gpk, "live_games") or FORCE_REFRESH:
+        if not _game_parquet_exists(gpk, "live_games") or not _game_parquet_exists(gpk, "live_lineups") or FORCE_REFRESH:
             new_game_pks.add(gpk)
 
     print(f"  {len(new_game_pks)} new games to process, {len(schedule_games) - len(new_game_pks)} cached", flush=True)
@@ -481,7 +543,7 @@ def main():
             if not feed:
                 continue
 
-            batting, pitching, plays, pitches, weather_info = extract_from_feed(gpk, feed)
+            batting, pitching, plays, pitches, lineups, weather_info = extract_from_feed(gpk, feed)
 
             # Game row with weather
             game_row = extract_game_row(g)
@@ -496,6 +558,8 @@ def main():
                 _write_game_parquet(gpk, "live_plays", pd.DataFrame(plays))
             if pitches:
                 _write_game_parquet(gpk, "live_pitches", pd.DataFrame(pitches))
+            if lineups:
+                _write_game_parquet(gpk, "live_lineups", pd.DataFrame(lineups))
 
             if (i + 1) % 50 == 0 or i == len(new_games) - 1:
                 print(f"  {i+1}/{len(new_games)} games processed", flush=True)
@@ -510,22 +574,31 @@ def main():
         standings_df.to_parquet(os.path.join(standings_dir, "standings.parquet"), index=False, engine="pyarrow")
     print(f"  {len(standings_df)} team records", flush=True)
 
+    # 4b. Compute ELO ratings from game results
+    print("\nComputing ELO ratings...", flush=True)
+    elo_df = compute_elo_ratings(schedule_games)
+    if not elo_df.empty:
+        elo_dir = os.path.join(PARQUET_CACHE, "live_elo")
+        os.makedirs(elo_dir, exist_ok=True)
+        elo_df.to_parquet(os.path.join(elo_dir, "elo.parquet"), index=False, engine="pyarrow")
+    print(f"  {len(elo_df)} team ELO ratings", flush=True)
+
     # 5. Sync Parquet to MinIO (upload only new files)
     print("\nSyncing Parquet to MinIO...", flush=True)
     minio_client = Minio(MINIO_ENDPOINT, access_key=MINIO_ACCESS_KEY,
                          secret_key=MINIO_SECRET_KEY, secure=False)
     total_uploaded = 0
+    from minio.deleteobjects import DeleteObject
     for table in TABLES:
-        if table == "live_standings":
-            # Standings always re-upload (single file, small)
+        if table in ("live_standings", "live_elo"):
             s3_dir = f"{PARQUET_PREFIX}/{table}"
-            from minio.deleteobjects import DeleteObject
             old = list(minio_client.list_objects(BUCKET, prefix=f"{s3_dir}/", recursive=True))
             if old:
                 list(minio_client.remove_objects(BUCKET, [DeleteObject(o.object_name) for o in old]))
-            local_path = os.path.join(PARQUET_CACHE, table, "standings.parquet")
+            fname = "standings.parquet" if table == "live_standings" else "elo.parquet"
+            local_path = os.path.join(PARQUET_CACHE, table, fname)
             if os.path.exists(local_path):
-                minio_client.fput_object(BUCKET, f"{s3_dir}/standings.parquet", local_path)
+                minio_client.fput_object(BUCKET, f"{s3_dir}/{fname}", local_path)
                 total_uploaded += 1
         else:
             uploaded = _sync_parquet_to_minio(minio_client, table)

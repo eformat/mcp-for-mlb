@@ -1,0 +1,9 @@
+gymnasium>=1.0
+numpy>=1.26
+trino>=0.329
+langchain>=0.3
+langchain-openai>=0.3
+langchain-core>=0.3
+langgraph>=0.4
+mlflow>=3.10
+nest-asyncio>=1.6

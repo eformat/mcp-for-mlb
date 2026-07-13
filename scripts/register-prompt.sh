@@ -5,6 +5,8 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
+VENV="${REPO_DIR}/.venv"
+PYTHON="${VENV}/bin/python"
 PROMPT_FILE="${REPO_DIR}/agents/mlb-agent/system_prompt.md"
 NAMESPACE="${NAMESPACE:-mlb-agent}"
 COMMIT_MSG="${1:-Prompt update}"
@@ -17,7 +19,6 @@ fi
 echo "Registering prompt from: ${PROMPT_FILE}"
 echo "Commit message: ${COMMIT_MSG}"
 
-# Kill any existing port-forward on 8443
 kill $(lsof -ti:8443) 2>/dev/null || true
 sleep 1
 
@@ -27,7 +28,7 @@ sleep 3
 
 SA_TOKEN=$(oc whoami -t)
 
-python3 -c "
+$PYTHON -c "
 import os, warnings
 warnings.filterwarnings('ignore')
 os.environ['MLFLOW_TRACKING_INSECURE_TLS'] = 'true'

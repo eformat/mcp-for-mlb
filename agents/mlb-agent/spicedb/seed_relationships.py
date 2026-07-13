@@ -40,7 +40,7 @@ DATASETS = [
     "pitch_player_names", "statcast_pitches", "pitch",
     # Live 2026 season tables
     "live_games", "live_boxscore_batting", "live_boxscore_pitching",
-    "live_plays", "live_pitches", "live_standings", "live",
+    "live_plays", "live_pitches", "live_standings", "live_lineups", "live",
     # Prediction history
     "prediction_history", "predictions",
 ]
@@ -51,6 +51,7 @@ SEED_RELATIONSHIPS = []
 for rel in ["member", "admin"]:
     SEED_RELATIONSHIPS.append(("organization", "mlb", rel, "user", "admin"))
 SEED_RELATIONSHIPS.append(("organization", "mlb", "member", "user", "viewer"))
+SEED_RELATIONSHIPS.append(("organization", "mlb", "member", "user", "hermes"))
 
 # admin user: analyst on all datasets
 for ds in DATASETS:
@@ -59,6 +60,10 @@ for ds in DATASETS:
 # viewer user: viewer on all datasets
 for ds in DATASETS:
     SEED_RELATIONSHIPS.append(("dataset", ds, "viewer", "user", "viewer"))
+
+# hermes user (Kanban worker): analyst on all datasets
+for ds in DATASETS:
+    SEED_RELATIONSHIPS.append(("dataset", ds, "analyst", "user", "hermes"))
 
 # All datasets owned by mlb org
 for ds in DATASETS:

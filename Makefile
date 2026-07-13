@@ -7,7 +7,7 @@ TAG          ?= latest
 PLATFORM     ?= linux/amd64
 NAMESPACE    ?= mlb-agent
 
-.PHONY: help all build push deploy-all deploy-agent deploy-mcp restart status \
+.PHONY: help all build push deploy-all deploy-agent deploy-mcp deploy-hermes restart status \
 	load-data lakehouse-summary check-games set-model register-prompt spicedb-seed \
 	fix-dspa-charset eval-compile eval-submit eval-status
 
@@ -39,6 +39,15 @@ deploy-agent: ## Deploy/update agent to OpenShift
 deploy-mcp: ## Deploy/update MCP server to OpenShift
 	oc apply -k deploy/mlb-mcp-server -n $(NAMESPACE)
 
+deploy-hermes: ## Deploy/upgrade Hermes agent with MLB Kanban picker
+	helm upgrade --install hermes deploy/hermes-chart \
+		--namespace $(HERMES_NAMESPACE) \
+		--set config.model.provider=custom \
+		--set config.model.model=$(AGENT_MODEL) \
+		--set config.model.base_url=$(MAAS_BASE_URL)/$(AGENT_MODEL)/v1 \
+		--set 'config.model.api_key=$${OPENAI_API_KEY}' \
+		--set secretEnv.OPENAI_API_KEY=$${OPENAI_API_KEY}
+
 restart: ## Restart agent + MCP server (picks up new images)
 	oc rollout restart deployment/mlb-mcp-server deployment/mlb-agent -n $(NAMESPACE)
 
@@ -52,6 +61,16 @@ load-data: ## Load data into Trino: make load-data [DATASET=all|baseball|weather
 
 load-predictions: ## Load prediction history from Chainlit into lakehouse
 	./scripts/load-data.sh predictions
+
+HERMES_NAMESPACE ?= hermes
+
+load-kanban-predictions: ## Load predictions from Hermes Kanban into lakehouse
+	@POD=$$(oc get pods -n $(HERMES_NAMESPACE) -l app.kubernetes.io/name=hermes \
+	  -o jsonpath='{.items[0].metadata.name}') && \
+	echo "Copying kanban.db from $$POD..." && \
+	mkdir -p data/predictions && \
+	oc cp $(HERMES_NAMESPACE)/$$POD:/opt/data/kanban.db data/predictions/kanban.db && \
+	./scripts/load-data.sh kanban-predictions
 
 restore-history: ## Restore Chainlit chat history from data/predictions/chainlit.db
 	@POD=$$(oc get pods -n $(NAMESPACE) -l app.kubernetes.io/name=mlb-agent -o jsonpath='{.items[0].metadata.name}') && \
@@ -101,3 +120,32 @@ eval-submit: ## Compile and submit eval pipeline run
 
 eval-status: ## Check latest eval pipeline run status
 	@./scripts/eval-status.sh
+
+# ── Prompt Tuning ────────────────────────────────────────
+tune-prompt: ## Run RL prompt tuning loop locally
+	./scripts/tune-prompt.sh --max-steps 50 --batch-size 40
+
+tune-prompt-dry: ## Dry run: show baseline metrics without modifying prompts
+	./scripts/tune-prompt.sh --dry-run
+
+tune-compile: ## Compile prompt tuning pipeline to YAML
+	python3 prompt_tuning/pipeline.py --compile
+
+tune-submit: ## Compile and submit prompt tuning pipeline run
+	./scripts/tune-submit.sh
+
+tune-backtest-submit: ## Tune against backtest_results (542+ games)
+	./scripts/tune-backtest-submit.sh
+
+tune-status: ## Check latest prompt tuning pipeline run status
+	@./scripts/tune-status.sh
+
+# ── Backtesting ──────────────────────────────────────────
+backtest-compile: ## Compile backtesting pipeline to YAML
+	python3 backtesting/pipeline.py --compile
+
+backtest-submit: ## Submit backtesting pipeline run
+	./scripts/backtest-submit.sh
+
+backtest-status: ## Check latest backtesting pipeline run status
+	@./scripts/backtest-status.sh

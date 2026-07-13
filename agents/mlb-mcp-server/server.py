@@ -15,6 +15,14 @@ from __future__ import annotations
 import os
 import re
 
+import grpc
+from authzed.api.v1 import (
+    CheckPermissionRequest,
+    CheckPermissionResponse,
+    Client as SpiceDBClient,
+    ObjectReference,
+    SubjectReference,
+)
 from fastmcp import FastMCP
 
 mcp = FastMCP(
@@ -29,6 +37,27 @@ mcp = FastMCP(
 
 TRINO_HOST = os.environ.get("TRINO_QUERY_HOST", "trino")
 TRINO_PORT = int(os.environ.get("TRINO_QUERY_PORT", "8080"))
+
+SPICEDB_ENDPOINT = os.environ.get("SPICEDB_ENDPOINT", "dev:50051")
+SPICEDB_TOKEN = os.environ.get("SPICEDB_TOKEN", "averysecretpresharedkey")
+
+
+class _BearerInterceptor(grpc.UnaryUnaryClientInterceptor):
+    def __init__(self, token: str) -> None:
+        self._metadata = [("authorization", f"Bearer {token}")]
+
+    def intercept_unary_unary(self, continuation, client_call_details, request):
+        metadata = list(client_call_details.metadata or []) + self._metadata
+        new_details = client_call_details._replace(metadata=metadata)
+        return continuation(new_details, request)
+
+
+_spicedb_channel = grpc.intercept_channel(
+    grpc.insecure_channel(SPICEDB_ENDPOINT),
+    _BearerInterceptor(SPICEDB_TOKEN),
+)
+_spicedb_client = SpiceDBClient.__new__(SpiceDBClient)
+_spicedb_client.init_stubs(_spicedb_channel)
 
 _BLOCKED_SQL = re.compile(
     r"\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE|MERGE|GRANT|REVOKE)\b",
@@ -843,6 +872,116 @@ async def get_methodology(dataset_name: str) -> dict:
             "url": "https://www.seanlahman.com/baseball-archive/statistics/",
         },
     }
+
+
+# ---------------------------------------------------------------------------
+# Permission check (SpiceDB)
+# ---------------------------------------------------------------------------
+
+@mcp.tool(description=(
+    "Check if a user has a specific permission on a dataset using SpiceDB. "
+    "ALWAYS call this BEFORE query_trino to verify access.\n\n"
+    "Args:\n"
+    "  subject_id: The user ID to check (e.g., 'admin', 'hermes', 'viewer').\n"
+    "  resource_id: The dataset name (e.g., 'batting', 'pitching', 'teams', "
+    "'weather', 'live', 'predictions').\n"
+    "  permission: The permission to check ('query', 'view_metadata', 'export')."
+))
+async def check_dataset_permission(
+    subject_id: str, resource_id: str, permission: str
+) -> dict:
+    """Check if a user has a specific permission on a dataset.
+
+    Args:
+        subject_id: The user ID to check.
+        resource_id: The dataset name.
+        permission: The permission to check.
+    """
+    try:
+        resp = _spicedb_client.CheckPermission(
+            CheckPermissionRequest(
+                resource=ObjectReference(
+                    object_type="dataset", object_id=resource_id
+                ),
+                permission=permission,
+                subject=SubjectReference(
+                    object=ObjectReference(
+                        object_type="user", object_id=subject_id
+                    )
+                ),
+            )
+        )
+        allowed = (
+            resp.permissionship
+            == CheckPermissionResponse.PERMISSIONSHIP_HAS_PERMISSION
+        )
+    except Exception as exc:
+        return {
+            "allowed": False,
+            "subject": f"user:{subject_id}",
+            "resource": f"dataset:{resource_id}",
+            "permission": permission,
+            "error": str(exc),
+        }
+
+    return {
+        "allowed": allowed,
+        "subject": f"user:{subject_id}",
+        "resource": f"dataset:{resource_id}",
+        "permission": permission,
+    }
+
+
+# ---------------------------------------------------------------------------
+# MLflow Prompt Loading
+# ---------------------------------------------------------------------------
+
+MLFLOW_TRACKING_URI = os.environ.get(
+    "MLFLOW_TRACKING_URI",
+    "https://mlflow.redhat-ods-applications.svc:8443/mlflow",
+)
+MLFLOW_WORKSPACE = os.environ.get("MLFLOW_WORKSPACE", "mlb-agent")
+
+
+@mcp.tool(description=(
+    "Load a versioned prompt from MLflow Prompt Registry. "
+    "Returns the prompt template text. Use this to load the latest RL-tuned "
+    "Game Prediction Framework. "
+    "Default: name='mlb-agent.system', alias='production'."
+))
+async def load_prompt(
+    name: str = "mlb-agent.system",
+    alias: str = "production",
+) -> dict:
+    """Load a prompt from MLflow Prompt Registry."""
+    try:
+        import mlflow
+        from pathlib import Path
+
+        os.environ["MLFLOW_TRACKING_INSECURE_TLS"] = "true"
+        if not os.environ.get("MLFLOW_TRACKING_TOKEN"):
+            sa_path = Path("/var/run/secrets/kubernetes.io/serviceaccount/token")
+            if sa_path.exists():
+                os.environ["MLFLOW_TRACKING_TOKEN"] = sa_path.read_text().strip()
+
+        mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
+        mlflow.set_workspace(MLFLOW_WORKSPACE)
+
+        prompt = mlflow.genai.load_prompt(
+            f"prompts:/{name}@{alias}",
+            allow_missing=True,
+        )
+        if prompt:
+            return {
+                "name": name,
+                "alias": alias,
+                "version": prompt.version,
+                "template": prompt.template,
+                "chars": len(prompt.template),
+            }
+        return {"error": f"Prompt '{name}@{alias}' not found"}
+    except Exception as e:
+        return {"error": str(e)}
 
 
 # ---------------------------------------------------------------------------

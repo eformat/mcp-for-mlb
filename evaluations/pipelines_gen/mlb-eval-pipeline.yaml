@@ -518,39 +518,41 @@ deploymentSpec:
           \  from langchain_core.messages import HumanMessage\n    from langchain_core.tools\
           \ import tool\n    from trino.dbapi import connect as trino_connect\n\n\
           \    BLOCKED_SQL = re.compile(r\"\\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE)\\\
-          b\", re.IGNORECASE)\n\n    @tool\n    def query_trino(sql: str) -> str:\n\
-          \        \"\"\"Execute a read-only SQL query against the MLB Iceberg lakehouse.\n\
-          \        Schema: lakehouse.mlb. Tables: batting, pitching, fielding, people,\
-          \ teams, parks,\n        series_post, awards_players, hall_of_fame, salaries,\
-          \ home_games, weather_stations,\n        weather_daily, pitch_pitches, pitch_atbats,\
+          b\", re.IGNORECASE)\n    STRING_LITERAL = re.compile(r\"'[^']*'\")\n\n \
+          \   @tool\n    def query_trino(sql: str) -> str:\n        \"\"\"Execute\
+          \ a read-only SQL query against the MLB Iceberg lakehouse.\n        Schema:\
+          \ lakehouse.mlb. Tables: batting, pitching, fielding, people, teams, parks,\n\
+          \        series_post, awards_players, hall_of_fame, salaries, home_games,\
+          \ weather_stations,\n        weather_daily, pitch_pitches, pitch_atbats,\
           \ pitch_games, statcast_pitches,\n        live_games, live_boxscore_batting,\
           \ live_boxscore_pitching, live_plays,\n        live_pitches, live_standings.\
-          \ Only SELECT allowed.\"\"\"\n        if BLOCKED_SQL.search(sql):\n    \
-          \        return json.dumps({\"error\": \"Only SELECT queries allowed.\"\
-          })\n        try:\n            conn = trino_connect(host=trino_host, port=trino_port,\
-          \ user=\"admin\", catalog=\"lakehouse\", schema=\"mlb\")\n            cur\
-          \ = conn.cursor()\n            cur.execute(sql)\n            columns = [d[0]\
-          \ for d in cur.description] if cur.description else []\n            rows\
-          \ = cur.fetchmany(500)\n            conn.close()\n            return json.dumps({\"\
-          results\": [dict(zip(columns, r)) for r in rows], \"row_count\": len(rows)})\n\
-          \        except Exception as e:\n            return json.dumps({\"error\"\
-          : str(e)})\n\n    @tool\n    def describe_datasets(topic: str = \"\") ->\
-          \ str:\n        \"\"\"List available MLB datasets.\"\"\"\n        return\
-          \ json.dumps({\"datasets\": [\n            {\"name\": \"batting/pitching/fielding\"\
-          , \"years\": \"1871-2025\"},\n            {\"name\": \"pitch_pitches (Statcast)\"\
-          , \"years\": \"2015-2019\"},\n            {\"name\": \"statcast_pitches\"\
-          , \"years\": \"2024-2025 postseason\"},\n            {\"name\": \"live_*\
-          \ (2026 season)\", \"years\": \"2026\"},\n            {\"name\": \"weather_daily\"\
-          , \"years\": \"~1872-2019\"},\n            {\"name\": \"salaries\", \"years\"\
-          : \"1985-2016\"},\n        ]})\n\n    @tool\n    def get_methodology(dataset_name:\
-          \ str) -> str:\n        \"\"\"Get methodology for a specific MLB dataset.\"\
-          \"\"\n        return json.dumps({\"data_type\": \"Official MLB records\"\
-          , \"collection\": \"Box scores and Statcast tracking\"})\n\n    agent_base_url\
-          \ = llm_base_url.replace(f\"/{judge_model}\", f\"/{agent_model}\")\n   \
-          \ if not agent_base_url.endswith(\"/v1\"):\n        agent_base_url = agent_base_url\
-          \ + \"/v1\"\n    print(f\"Agent: {agent_model} via {agent_base_url}\", flush=True)\n\
-          \n    agent_llm = ChatOpenAI(\n        model=agent_model, base_url=agent_base_url,\n\
-          \        api_key=os.environ.get(\"OPENAI_API_KEY\", \"x\"),\n        temperature=0.3,\
+          \ Only SELECT allowed.\"\"\"\n        if BLOCKED_SQL.search(STRING_LITERAL.sub(\"\
+          ''\", sql)):\n            return json.dumps({\"error\": \"Only SELECT queries\
+          \ allowed.\"})\n        try:\n            conn = trino_connect(host=trino_host,\
+          \ port=trino_port, user=\"admin\", catalog=\"lakehouse\", schema=\"mlb\"\
+          )\n            cur = conn.cursor()\n            cur.execute(sql)\n     \
+          \       columns = [d[0] for d in cur.description] if cur.description else\
+          \ []\n            rows = cur.fetchmany(500)\n            conn.close()\n\
+          \            return json.dumps({\"results\": [dict(zip(columns, r)) for\
+          \ r in rows], \"row_count\": len(rows)})\n        except Exception as e:\n\
+          \            return json.dumps({\"error\": str(e)})\n\n    @tool\n    def\
+          \ describe_datasets(topic: str = \"\") -> str:\n        \"\"\"List available\
+          \ MLB datasets.\"\"\"\n        return json.dumps({\"datasets\": [\n    \
+          \        {\"name\": \"batting/pitching/fielding\", \"years\": \"1871-2025\"\
+          },\n            {\"name\": \"pitch_pitches (Statcast)\", \"years\": \"2015-2019\"\
+          },\n            {\"name\": \"statcast_pitches\", \"years\": \"2024-2025\
+          \ postseason\"},\n            {\"name\": \"live_* (2026 season)\", \"years\"\
+          : \"2026\"},\n            {\"name\": \"weather_daily\", \"years\": \"~1872-2019\"\
+          },\n            {\"name\": \"salaries\", \"years\": \"1985-2016\"},\n  \
+          \      ]})\n\n    @tool\n    def get_methodology(dataset_name: str) -> str:\n\
+          \        \"\"\"Get methodology for a specific MLB dataset.\"\"\"\n     \
+          \   return json.dumps({\"data_type\": \"Official MLB records\", \"collection\"\
+          : \"Box scores and Statcast tracking\"})\n\n    agent_base_url = llm_base_url.replace(f\"\
+          /{judge_model}\", f\"/{agent_model}\")\n    if not agent_base_url.endswith(\"\
+          /v1\"):\n        agent_base_url = agent_base_url + \"/v1\"\n    print(f\"\
+          Agent: {agent_model} via {agent_base_url}\", flush=True)\n\n    agent_llm\
+          \ = ChatOpenAI(\n        model=agent_model, base_url=agent_base_url,\n \
+          \       api_key=os.environ.get(\"OPENAI_API_KEY\", \"x\"),\n        temperature=0.3,\
           \ max_tokens=4096, streaming=False,\n        model_kwargs={\"extra_body\"\
           : {\"chat_template_kwargs\": {\"enable_thinking\": False}}},\n    )\n\n\
           \    prompt_name = \"mlb-agent.system\"\n    system_prompt = None\n    prompt_version\

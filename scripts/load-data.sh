@@ -66,6 +66,10 @@ case "$DATASET" in
         CHAINLIT_DB="${REPO_DIR}/data/predictions/chainlit.db" \
             $PYTHON "${REPO_DIR}/scripts/load-predictions-trino.py"
         ;;
+    kanban-predictions)
+        KANBAN_DB="${KANBAN_DB:-${REPO_DIR}/data/predictions/kanban.db}" \
+            $PYTHON "${REPO_DIR}/scripts/load-kanban-predictions.py"
+        ;;
     upload)
         $PYTHON "${REPO_DIR}/scripts/upload-data-minio.py"
         ;;
@@ -78,7 +82,7 @@ case "$DATASET" in
         ;;
     *)
         echo "Unknown dataset: $DATASET"
-        echo "Usage: $0 [all|baseball|weather|pitch|live|predictions|upload]"
+        echo "Usage: $0 [all|baseball|weather|pitch|live|predictions|kanban-predictions|upload]"
         exit 1
         ;;
 esac

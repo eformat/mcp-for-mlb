@@ -71,6 +71,8 @@ Execute read-only SQL against the `lakehouse.mlb` schema. Only SELECT allowed.
 | `live_boxscore_pitching` | game_pk, player_id, player_name, team_name, innings_pitched, hits, earned_runs, strikeouts, walks, era, whip, pitch_count, win, loss, save | Per-game pitching stats (~6K rows) |
 | `live_plays` | game_pk, at_bat_index, inning, half_inning, batter_name, pitcher_name, event, event_type, description, rbi, is_scoring_play, is_out | Play-by-play (~58K rows) |
 | `live_pitches` | game_pk, at_bat_index, pitch_number, pitcher_id, batter_id, pitch_type, pitch_description, start_speed, spin_rate, plate_x, plate_z, pfx_x, pfx_z, is_strike, is_ball, is_in_play, balls, strikes, outs | Individual pitches 2026 (~223K rows) |
+| `live_lineups` | game_pk, side (away/home), lineup_position (1-9), player_id, player_name, primary_position | Batting order per game |
+| `live_elo` | team_name, elo_rating, games_played | ELO ratings computed from game results (1500=avg, higher=better) |
 | `live_standings` | team_name, wins, losses, winning_pct, games_back, division_name, streak, runs_scored, runs_allowed, run_differential, division_rank | Current standings (30 rows) |
 
 **Prediction history table:**
@@ -126,21 +128,63 @@ When asked to predict game outcomes, follow this structured process. Predictions
 
 #### Step 1: Query the Data
 
-**Process games in batches of 3.** For each batch, run 3 targeted queries with all pitchers/teams for that batch in IN clauses. Make picks for those 3 games, then move to the next batch.
+**Process games in batches of 3.** For each batch, run 6 targeted queries with all pitchers/teams for that batch in IN clauses. Make picks for those 3 games, then move to the next batch.
 
-**Query 1 — Starter stats for the batch's pitchers:**
+**Query 1 — Starter stats (season + last 5 + FIP + rest days + home/away splits):**
 ```sql
-SELECT player_name, COUNT(*) AS starts,
-       ROUND(CAST(SUM(earned_runs) AS DOUBLE) * 9.0 / NULLIF(SUM(CAST(innings_pitched AS DOUBLE)), 0), 2) AS era,
-       ROUND(CAST(SUM(walks) + SUM(hits) AS DOUBLE) / NULLIF(SUM(CAST(innings_pitched AS DOUBLE)), 0), 2) AS whip,
-       SUM(strikeouts) AS k, SUM(CAST(win AS INTEGER)) AS w, SUM(CAST(loss AS INTEGER)) AS l
-FROM lakehouse.mlb.live_boxscore_pitching
-WHERE CAST(innings_pitched AS DOUBLE) >= 5.0
-  AND player_name IN ('[PITCHER1]', '[PITCHER2]', ...)
-GROUP BY player_name ORDER BY era
+SELECT pit.player_name, COUNT(*) AS starts,
+       ROUND(CAST(SUM(pit.earned_runs) AS DOUBLE) * 9.0 / NULLIF(SUM(CAST(pit.innings_pitched AS DOUBLE)), 0), 2) AS season_era,
+       ROUND(CAST(SUM(pit.walks) + SUM(pit.hits) AS DOUBLE) / NULLIF(SUM(CAST(pit.innings_pitched AS DOUBLE)), 0), 2) AS season_whip,
+       SUM(pit.strikeouts) AS k, SUM(CAST(pit.win AS INTEGER)) AS w, SUM(CAST(pit.loss AS INTEGER)) AS l,
+       ROUND((13.0 * SUM(pit.home_runs) + 3.0 * SUM(pit.walks) - 2.0 * SUM(pit.strikeouts))
+             / NULLIF(SUM(CAST(pit.innings_pitched AS DOUBLE)), 0) + 3.10, 2) AS fip,
+       recent.era AS last5_era, recent.whip AS last5_whip,
+       rest.days_since_last_start,
+       home_split.era AS home_era, away_split.era AS away_era
+FROM lakehouse.mlb.live_boxscore_pitching pit
+LEFT JOIN (
+  SELECT player_name,
+         ROUND(CAST(SUM(earned_runs) AS DOUBLE) * 9.0 / NULLIF(SUM(CAST(innings_pitched AS DOUBLE)), 0), 2) AS era,
+         ROUND(CAST(SUM(walks) + SUM(hits) AS DOUBLE) / NULLIF(SUM(CAST(innings_pitched AS DOUBLE)), 0), 2) AS whip
+  FROM (
+    SELECT p.*, ROW_NUMBER() OVER (PARTITION BY p.player_name ORDER BY g.game_date DESC) AS rn
+    FROM lakehouse.mlb.live_boxscore_pitching p
+    JOIN lakehouse.mlb.live_games g ON p.game_pk = g.game_pk
+    WHERE CAST(p.innings_pitched AS DOUBLE) >= 5.0
+  ) WHERE rn <= 5
+  GROUP BY player_name
+) recent ON pit.player_name = recent.player_name
+LEFT JOIN (
+  SELECT player_name,
+         CAST(CURRENT_DATE AS DATE) - MAX(g.game_date) AS days_since_last_start
+  FROM lakehouse.mlb.live_boxscore_pitching p
+  JOIN lakehouse.mlb.live_games g ON p.game_pk = g.game_pk
+  WHERE CAST(p.innings_pitched AS DOUBLE) >= 5.0
+  GROUP BY player_name
+) rest ON pit.player_name = rest.player_name
+LEFT JOIN (
+  SELECT p.player_name,
+         ROUND(CAST(SUM(p.earned_runs) AS DOUBLE) * 9.0 / NULLIF(SUM(CAST(p.innings_pitched AS DOUBLE)), 0), 2) AS era
+  FROM lakehouse.mlb.live_boxscore_pitching p
+  JOIN lakehouse.mlb.live_games g ON p.game_pk = g.game_pk
+  WHERE CAST(p.innings_pitched AS DOUBLE) >= 5.0 AND p.team_name = g.home_team_name
+  GROUP BY p.player_name
+) home_split ON pit.player_name = home_split.player_name
+LEFT JOIN (
+  SELECT p.player_name,
+         ROUND(CAST(SUM(p.earned_runs) AS DOUBLE) * 9.0 / NULLIF(SUM(CAST(p.innings_pitched AS DOUBLE)), 0), 2) AS era
+  FROM lakehouse.mlb.live_boxscore_pitching p
+  JOIN lakehouse.mlb.live_games g ON p.game_pk = g.game_pk
+  WHERE CAST(p.innings_pitched AS DOUBLE) >= 5.0 AND p.team_name = g.away_team_name
+  GROUP BY p.player_name
+) away_split ON pit.player_name = away_split.player_name
+WHERE CAST(pit.innings_pitched AS DOUBLE) >= 5.0
+  AND pit.player_name IN ('[PITCHER1]', '[PITCHER2]', ...)
+GROUP BY pit.player_name, recent.era, recent.whip, rest.days_since_last_start,
+         home_split.era, away_split.era ORDER BY season_era
 ```
 
-**Query 2 — Standings + bullpen + recent team offense for the batch's teams:**
+**Query 2 — Standings + bullpen + recent team offense:**
 ```sql
 SELECT s.team_name, s.wins, s.losses, s.winning_pct, s.run_differential, s.streak,
        b.bullpen_era, o.rpg AS recent_runs_per_game
@@ -164,7 +208,7 @@ LEFT JOIN (
 WHERE s.team_name IN ('[TEAM1]', '[TEAM2]', ...)
 ```
 
-**Query 3 — Head-to-head record this season for the batch's matchups:**
+**Query 3 — Head-to-head record this season:**
 ```sql
 SELECT away_team_name, home_team_name,
        COUNT(*) AS games,
@@ -177,31 +221,100 @@ WHERE game_status = 'Final'
 GROUP BY away_team_name, home_team_name
 ```
 
-After querying, make picks for the batch, then continue with the next 3 games. If a pitcher has no data, note it and pick based on team factors.
+**Query 4 — Most recent batting lineup and player stats:**
+```sql
+SELECT l.side, l.lineup_position, l.player_name, l.primary_position,
+       COUNT(b.game_pk) AS games_played,
+       ROUND(CAST(SUM(b.hits) AS DOUBLE) / NULLIF(SUM(b.at_bats), 0), 3) AS avg,
+       SUM(b.home_runs) AS hr, SUM(b.rbi) AS rbi,
+       ROUND(AVG(CAST(b.hits + b.walks AS DOUBLE) / NULLIF(CAST(b.at_bats + b.walks AS DOUBLE), 0)), 3) AS obp
+FROM lakehouse.mlb.live_lineups l
+JOIN lakehouse.mlb.live_boxscore_batting b ON l.player_id = b.player_id
+WHERE l.game_pk = (
+  SELECT MAX(l2.game_pk) FROM lakehouse.mlb.live_lineups l2
+  JOIN lakehouse.mlb.live_games g2 ON l2.game_pk = g2.game_pk
+  WHERE g2.game_status = 'Final'
+    AND l2.side = l.side
+    AND l2.game_pk IN (SELECT game_pk FROM lakehouse.mlb.live_lineups
+                       WHERE player_id IN (SELECT player_id FROM lakehouse.mlb.live_lineups WHERE game_pk = l.game_pk))
+)
+  AND l.side IN ('away', 'home')
+GROUP BY l.side, l.lineup_position, l.player_name, l.primary_position
+ORDER BY l.side, l.lineup_position
+```
+
+**Query 5 — ELO ratings (team strength independent of record):**
+```sql
+SELECT team_name, elo_rating
+FROM lakehouse.mlb.live_elo
+WHERE team_name IN ('[TEAM1]', '[TEAM2]', ...)
+```
+Higher ELO = stronger team (1500 = average). ELO accounts for margin of victory and opponent quality — more predictive than W-L record.
+
+**Query 6 — Bullpen workload (fatigue indicator):**
+```sql
+SELECT p.team_name,
+       SUM(CAST(p.innings_pitched AS DOUBLE)) AS bullpen_ip_last_3d,
+       COUNT(DISTINCT p.game_pk) AS bullpen_games_last_3d
+FROM lakehouse.mlb.live_boxscore_pitching p
+JOIN lakehouse.mlb.live_games g ON p.game_pk = g.game_pk
+WHERE CAST(p.innings_pitched AS DOUBLE) < 5.0
+  AND CAST(p.innings_pitched AS DOUBLE) > 0
+  AND g.game_date >= CURRENT_DATE - INTERVAL '3' DAY
+  AND p.team_name IN ('[TEAM1]', '[TEAM2]', ...)
+GROUP BY p.team_name
+```
+A bullpen with >12 IP in last 3 days is fatigued — their ERA today will be worse than season average.
 
 #### Step 2: Weight the Factors
 
 | Priority | Factor | Weight | Notes |
 |----------|--------|--------|-------|
-| 1 | **Starting pitcher quality** | ~35% | Compare ERA, WHIP, K rate from season starts. Sub-3.00 vs above-5.00 is the strongest signal. |
-| 2 | **Team recent offense** | ~20% | Runs/game over last 10 games. A team scoring 6+ rpg vs one scoring 3 rpg is significant. |
-| 3 | **Bullpen ERA** | ~15% | Matters most when starters are comparable. Bad bullpen erases a starter's edge. |
-| 4 | **Head-to-head record** | ~10% | Season series record between these teams. 4-1 head-to-head is meaningful; 1-1 is noise. |
-| 5 | **Run differential** | ~10% | Better than W-L for true team quality. +50 vs -30 is meaningful. |
-| 6 | **Home field advantage** | ~5% | Real but small (~53-54% historically). NEVER use as tiebreaker when pitching data is clear. |
-| 7 | **Streaks / momentum** | ~5% | Minor factor. Only consider 5+ game streaks; shorter streaks are noise. |
+| 1 | **Starting pitcher (FIP + last5_era)** | ~25% | Use FIP as primary, last5_era as secondary. If FIP and ERA diverge >0.5, trust FIP. |
+| 2 | **Bullpen ERA + workload** | ~20% | Season bullpen ERA adjusted for fatigue: if >12 IP in last 3 days, add 0.5 to their ERA. |
+| 3 | **ELO rating gap** | ~15% | ELO gap >40 = meaningful edge. Captures team quality better than W-L. |
+| 4 | **Recent offense (RPG, last 10)** | ~15% | Gap of 0.75+ RPG is meaningful. |
+| 5 | **Park factor (BPF/PPF)** | ~5% | At hitter parks (BPF>105), weight offense higher. At pitcher parks (PPF<95), ERA looks artificially low. |
+| 6 | **Pitcher rest days** | ~5% | <4 days rest = red flag (downgrade). >6 days = rust concern. 4-5 days = optimal. |
+| 7 | **Home/away splits** | ~5% | If pitcher's home/away ERA gap >1.0, use the relevant split for today's venue. |
+| 8 | **Run differential** | ~5% | Tiebreaker signal. +50 vs -30 is meaningful. |
+| 9 | **Platoon / lineup / H2H / streaks** | ~5% | LHP vs RHH-heavy lineup = disadvantage. Otherwise minor. |
 
 #### Step 3: Decision Rules
 
-1. **Pitching edge is king.** Sub-3.00 ERA vs above-4.50 ERA = pick the better pitcher's team unless the offensive mismatch is extreme (top-5 vs bottom-5).
-2. **Never override current stats with "experience" or "track record."** A veteran with a 6.00 ERA this season is pitching badly this season.
-3. **Both starters bad (ERA > 5.00) = COIN FLIP.** Do not pretend secondary factors make this predictable.
-4. **Both starters elite (ERA < 3.00) = COIN FLIP or LEAN at best.** Small factors decide and those are unpredictable.
-5. **Home field is a nudge, not a factor.** Only mention when everything else is dead even. Never cite as primary reason.
-6. **Use run differential, not W-L record.** A 25-25 team at +40 run diff is better than a 30-20 team at -10.
-7. **Default to LEAN, not STRONG.** Most picks should be LEAN. STRONG is reserved for dominant mismatches — don't force it.
-8. **Bullpen ERA is a STRONG-breaker.** Before assigning STRONG, check both bullpens. If the picked team's bullpen ERA is worse than the opponent's, downgrade to LEAN — a starter's edge gets erased in the late innings.
-9. **Unknown pitchers = COIN FLIP max.** If either starter is listed as Undecided, TBD, or has zero qualifying starts in the data, cap confidence at COIN FLIP. You cannot be confident about a game when you don't know who's pitching.
+**Secondary score:** Award each team +1 for: lower bullpen ERA (adjusted for workload), higher RPG (last 10), higher run differential, higher ELO. Max = 4.
+
+**Core rules:**
+1. **FIP over ERA.** Use FIP as the primary pitching metric. If ERA is >0.5 lower than FIP, the pitcher is getting lucky — regression likely. If ERA is >0.5 higher than FIP, the pitcher is unlucky.
+2. **ELO as quality baseline.** ELO gap >40 = real team quality difference. ELO gap <20 = teams are similar — rely on pitching matchup.
+3. **Bullpen + fatigue.** Season bullpen ERA adjusted: if team's bullpen threw >12 IP in last 3 days, add 0.5 to their effective bullpen ERA.
+4. **Rest days matter.** Pitcher on <4 days rest: downgrade confidence one tier. Pitcher on >6 days rest: minor concern (rust).
+5. **Use home/away split ERA.** If pitcher's home ERA vs away ERA gap >1.0, use the relevant split for today's venue instead of season ERA.
+6. **Park factor adjustment.** At hitter parks (BPF>105 — Coors, Great American, Globe Life), weight offense (RPG) more heavily. At pitcher parks (PPF<95 — Petco, Oracle, T-Mobile), ERA looks artificially low — discount by 5%.
+7. **Platoon awareness.** LHP facing lineup with mostly RHH = platoon disadvantage. If pitcher handedness is known, consider this a tiebreaker.
+8. **Recent form over season.** If last5_era diverges from season_era by >1.0, use last5_era exclusively.
+9. **Both starters FIP >5.00:** secondary factors decide. Cap at LEAN.
+10. **Both starters FIP <3.50:** LEAN at best. Do not force STRONG.
+11. **Unknown pitchers:** TBD/Undecided/zero qualifying starts = COIN FLIP max.
+12. **LEAN requires secondary score ≥3** (out of 4). Secondary score ≤2 = COIN FLIP.
+13. **COIN FLIP tiebreaker order:** ELO → bullpen ERA → RPG → run differential. Always name a team.
+14. **Default to COIN FLIP.** LEAN requires clear multi-factor dominance. When uncertain, COIN FLIP.
+
+**STRONG checklist (ALL must pass):**
+- [ ] FIP gap ≥2.0 (or last5_era gap ≥2.0 if FIP unavailable)
+- [ ] Both pitchers known and qualified (≥3 starts)
+- [ ] Picked team bullpen ERA ≤ opponent's (fatigue-adjusted)
+- [ ] Picked team ELO > opponent's
+- [ ] Picked team RPG ≥ opponent's
+- [ ] Picked team secondary score = 4
+- [ ] Starter on 4-5 days rest (not short rest, not rusty)
+
+**LEAN checklist (ALL must pass):**
+- [ ] FIP gap ≥1.0
+- [ ] Picked team secondary score ≥3
+- [ ] Bullpen (fatigue-adjusted) does not oppose pick by >0.75
+- [ ] Opponent does NOT lead in both bullpen ERA and RPG
+- [ ] Starter not on short rest (<4 days)
 
 #### Step 4: Output Format
 
@@ -210,28 +323,37 @@ For each game:
 ### [Away Team] @ [Home Team]
 **Pitchers:** [Away SP] (last 5: X.XX ERA) vs [Home SP] (last 5: X.XX ERA)
 **Key factors:**
-- [Most important factor, usually pitching]
+- [Most important factor, usually bullpen or pitching]
 - [Second factor]
 - [Third if relevant]
-**Pick: [TEAM NAME]** ← ALWAYS pick a team, even on coin flips. Never put "COIN FLIP" as the pick. Make exactly ONE pick per game — never revisit a game already picked.
+**Pick: [TEAM NAME]**
 **Confidence: [STRONG / LEAN / COIN FLIP]**
 [One sentence why]
 ```
 
 **Confidence tiers:**
-- **STRONG**: Requires ALL of: (1) pitching edge of 2.0+ ERA gap, (2) BOTH pitchers are known (not Undecided/TBD), (3) picked team's bullpen ERA ≤ opponent's, (4) picked team has positive run differential. If ANY condition fails, downgrade to LEAN. Use very sparingly.
-- **LEAN**: The default tier. Moderate pitching edge OR pitching close but one team has better offense/bullpen/run differential.
-- **COIN FLIP**: Both pitchers struggling, both elite, or factors point opposite directions. Still pick a team — just flag the uncertainty.
+- **STRONG**: All 7 checklist items pass. ANY failure = downgrade to LEAN.
+- **LEAN**: All 5 LEAN checklist items pass including secondary score =3. Any failure = COIN FLIP.
+- **COIN FLIP**: Everything else. Name a team using bullpen → RPG → run differential. Never write "COIN FLIP" as the pick name.
 
 #### Anti-Patterns (DO NOT)
-- Pick the home team when the away pitcher is clearly better
-- Cite winning streaks as a reason
+- Pick the home team by default — use data, not venue
+- Use home field or streaks as tiebreakers when any pitching/bullpen/RPG data exists
+- Assign LEAN when secondary score ≤2
+- Assign LEAN when opponent leads in both bullpen ERA and RPG
+- Assign LEAN when picked team's bullpen ERA exceeds opponent's by >0.75
+- Assign LEAN when either starter is in the 4.50–5.00 ERA zone without bullpen+RPG confirmation
+- Assign STRONG when ERA gap <2.0, bullpen favors opponent, either starter unknown, both ERA >4.50, or both ERA <3.50
+- Assign STRONG without all 7 checklist items passing
+- Override a bullpen disadvantage >0.75 with a starter edge <1.5
+- Force LEAN when pitching, bullpen, offense, and run differential are all within normal variance
+- Cite streaks under 7 games as meaningful
 - Say "experience" or "big-game track record" when current stats disagree
-- Pick against a dominant pitcher because their team has a worse record
-- Assign STRONG confidence when both starters have ERA > 4.50 or both < 3.00
-- Put "COIN FLIP" as the Pick — COIN FLIP is a confidence level, not a team. Always pick a team name.
-- Assign STRONG or LEAN when either pitcher is Undecided, TBD, or has zero qualifying starts
-- Pick the same game twice — make exactly ONE pick per game, never revisit
+- Treat head-to-head as meaningful unless 6+ games AND 5-1 or more lopsided
+- Write "COIN FLIP" as the Pick name — always name a team
+- Make more than one pick per game
+- Default to the favorite or higher-record team in COIN FLIP situations — follow the bullpen→RPG→run differential chain strictly
+- Pick the road underdog or home favorite reflexively — the tiebreaker chain is the only valid COIN FLIP logic
 
 #### Self-Learning from Past Predictions
 
@@ -243,7 +365,15 @@ FROM lakehouse.mlb.prediction_history WHERE was_correct IS NOT NULL
 GROUP BY confidence ORDER BY accuracy DESC
 ```
 
-Display the EXACT numbers from the query results — do not round, estimate, or change them. Use the results to calibrate: if STRONG accuracy is your worst tier, be more selective about assigning it.
+Display the EXACT numbers from the query results — do not round, estimate, or change them. Calibration rules:
+- If COIN FLIP accuracy <50%: the bullpen tiebreaker is not working — weight RPG more heavily in COIN FLIP resolution.
+- If COIN FLIP accuracy 50–58%: current logic is baseline; maintain bullpen→RPG→run differential chain strictly.
+- If LEAN accuracy <65%: require secondary score =3 AND pitching gap ≥1.5. Demote all borderline LEANs to COIN FLIP.
+- If STRONG accuracy <70%: add one more required condition to the STRONG checklist.
+- **Use FIP instead of ERA for all pitcher comparisons.** ERA includes defense and luck; FIP isolates what the pitcher controls.
+- **Check ELO gap first for COIN FLIP resolution.** ELO is the strongest single predictor of team quality.
+- **When tiebreakers split, weight ELO > bullpen > RPG > run differential.**
+
 
 ### Statistics Definitions
 - **stint:** Order of appearance with different teams in a season (stint=1 is first team)

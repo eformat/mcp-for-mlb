@@ -20,12 +20,10 @@ import os
 import re
 import sqlite3
 import sys
-import tempfile
 import time
 
 import pandas as pd
 from minio import Minio
-from minio.deleteobjects import DeleteObject
 from trino.dbapi import connect
 
 TRINO_HOST = os.environ.get("TRINO_HOST", "localhost")
@@ -156,6 +154,24 @@ def resolve_ambiguous(away, home):
                     else:
                         home = resolved
     return away, home
+
+
+def resolve_picked_team(picked, away, home):
+    """Resolve an ambiguous picked team name using the matchup context.
+
+    If the pick is just a city name like 'New York', figure out which
+    team it refers to by checking which side of the matchup is from that city.
+    """
+    if not picked:
+        return picked
+    picked_lower = picked.lower()
+    if picked_lower not in _AMBIGUOUS_CITIES:
+        return picked
+    candidates = _AMBIGUOUS_CITIES[picked_lower]
+    for candidate in candidates:
+        if candidate == away or candidate == home:
+            return candidate
+    return picked
 
 
 def extract_game_date(thread_name, created_at):
@@ -379,27 +395,8 @@ def _extract_pitcher_name(text):
     return m.group(1).strip() if m else cleaned[:50]
 
 
-def _build_staging_columns(df):
-    parts = []
-    for col in df.columns:
-        pd_dtype = df[col].dtype
-        if pd_dtype == "float64":
-            parts.append(f'"{col}" DOUBLE')
-        elif pd_dtype == "int64":
-            parts.append(f'"{col}" BIGINT')
-        else:
-            parts.append(f'"{col}" VARCHAR')
-    return ", ".join(parts)
-
-
-def _build_ctas_columns(df):
-    parts = []
-    for col in df.columns:
-        if col in INT_COLS:
-            parts.append(f'TRY_CAST("{col}" AS INTEGER) AS "{col}"')
-        else:
-            parts.append(f'CAST("{col}" AS VARCHAR) AS "{col}"')
-    return ", ".join(parts)
+sys.path.insert(0, os.path.dirname(__file__))
+from prediction_loader import merge_predictions, print_accuracy
 
 
 def read_chainlit_predictions(db_path):
@@ -422,11 +419,15 @@ def read_chainlit_predictions(db_path):
 
 
 def is_prediction_thread(thread_name):
-    """Check if a thread name indicates a prediction session (not a results review)."""
+    """Check if a thread name indicates a prediction session (not a results review).
+
+    Exclude threads must be checked first — thread names sometimes contain
+    pasted picks tables alongside 'analyze' in the name.
+    """
     if not thread_name:
         return False
     name_lower = thread_name.lower()
-    if re.search(r'results|analyze|review|how did', name_lower):
+    if re.search(r'results|analy[sz]|review|how did|how well|accuracy', name_lower):
         return False
     if re.search(r'pick|winners|predict', name_lower):
         return True
@@ -535,6 +536,7 @@ def main():
 
     # Collect all predictions, then deduplicate per (thread, matchup)
     raw_records = {}
+    used_game_pks = set()
     skipped = 0
     for row in rows:
         thread_name = row["thread_name"]
@@ -551,12 +553,15 @@ def main():
         for pred in preds:
             pred["away_team"], pred["home_team"] = resolve_ambiguous(
                 pred["away_team"], pred["home_team"])
+            pred["picked_team"] = resolve_picked_team(
+                pred["picked_team"], pred["away_team"], pred["home_team"])
             dedup_key = (game_date, pred["away_team"], pred["home_team"])
 
-            # Keep the version with the most data (confidence populated wins)
+            # Keep the first prediction with confidence; skip later duplicates
             existing = raw_records.get(dedup_key)
-            if existing and existing["confidence"] and not pred["confidence"]:
-                continue
+            if existing:
+                if existing.get("confidence") or not pred.get("confidence"):
+                    continue
 
             pred_id = hashlib.sha256(
                 f"{row['thread_id']}:{pred['away_team']}:{pred['home_team']}".encode()
@@ -564,6 +569,13 @@ def main():
 
             result = find_game_result(game_date, pred["away_team"], pred["home_team"],
                                       by_date, by_matchup)
+
+            # Skip if this game result was already claimed by another prediction
+            gpk = result.get("game_pk")
+            if gpk and gpk in used_game_pks:
+                continue
+            if gpk:
+                used_game_pks.add(gpk)
 
             was_correct = None
             if result.get("winner") and pred["picked_team"]:
@@ -599,73 +611,11 @@ def main():
 
     df = pd.DataFrame(records)
 
-    str_cols = [c for c in df.columns if c not in INT_COLS]
-    for c in str_cols:
-        df[c] = df[c].astype(object).where(df[c].notna(), None)
-
     print(f"\n  Parsed {len(df)} predictions ({skipped} steps skipped)", flush=True)
 
-    tmpdir = tempfile.mkdtemp(prefix="mlb-predictions-")
-    pq_path = os.path.join(tmpdir, f"{TABLE_NAME}.parquet")
-    df.to_parquet(pq_path, index=False, engine="pyarrow")
+    merge_predictions(df, staging_cur, lakehouse_cur, minio_client, "chainlit")
+    print_accuracy(lakehouse_cur)
 
-    s3_dir = f"{PARQUET_PREFIX}/{TABLE_NAME}"
-    s3_key = f"{s3_dir}/{TABLE_NAME}.parquet"
-    old = list(minio_client.list_objects(BUCKET, prefix=f"{s3_dir}/", recursive=True))
-    if old:
-        list(minio_client.remove_objects(BUCKET, [DeleteObject(o.object_name) for o in old]))
-    minio_client.fput_object(BUCKET, s3_key, pq_path)
-
-    staging_cur.execute(f'DROP TABLE IF EXISTS staging.mlb."{TABLE_NAME}"')
-    col_defs = _build_staging_columns(df)
-    staging_cur.execute(f"""
-        CREATE TABLE staging.mlb."{TABLE_NAME}" ({col_defs})
-        WITH (format = 'PARQUET', external_location = 's3://{BUCKET}/{s3_dir}/')
-    """)
-
-    lakehouse_cur.execute(f'DROP TABLE IF EXISTS lakehouse.mlb."{TABLE_NAME}"')
-    select_cols = _build_ctas_columns(df)
-    lakehouse_cur.execute(f"""
-        CREATE TABLE lakehouse.mlb."{TABLE_NAME}" AS
-        SELECT {select_cols} FROM staging.mlb."{TABLE_NAME}"
-    """)
-
-    lakehouse_cur.execute(f'SELECT COUNT(*) FROM lakehouse.mlb."{TABLE_NAME}"')
-    count = lakehouse_cur.fetchone()[0]
-    print(f"  {TABLE_NAME}: {count:,} rows", flush=True)
-
-    # Accuracy summary
-    print("\nPrediction Accuracy:", flush=True)
-    try:
-        lakehouse_cur.execute(f"""
-            SELECT confidence,
-                   COUNT(*) AS picks,
-                   SUM(was_correct) AS correct,
-                   ROUND(CAST(SUM(was_correct) AS DOUBLE) / NULLIF(COUNT(was_correct), 0), 3) AS accuracy
-            FROM lakehouse.mlb."{TABLE_NAME}"
-            WHERE was_correct IS NOT NULL
-            GROUP BY confidence
-            ORDER BY accuracy DESC
-        """)
-        for row in lakehouse_cur.fetchall():
-            print(f"  {row[0] or 'UNKNOWN':12s}  {row[2]}/{row[1]} ({row[3]:.1%})", flush=True)
-    except Exception as e:
-        print(f"  Accuracy query failed: {e}", flush=True)
-
-    try:
-        lakehouse_cur.execute(f"""
-            SELECT COUNT(*) AS total,
-                   SUM(CASE WHEN was_correct IS NOT NULL THEN 1 ELSE 0 END) AS resolved,
-                   SUM(CASE WHEN was_correct IS NULL THEN 1 ELSE 0 END) AS pending
-            FROM lakehouse.mlb."{TABLE_NAME}"
-        """)
-        row = lakehouse_cur.fetchone()
-        print(f"\n  Total: {row[0]}  Resolved: {row[1]}  Pending: {row[2]}", flush=True)
-    except Exception as e:
-        print(f"  Summary query failed: {e}", flush=True)
-
-    import shutil
-    shutil.rmtree(tmpdir, ignore_errors=True)
     staging_conn.close()
     lakehouse_conn.close()
 

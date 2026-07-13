@@ -1,2 +1,5 @@
 fastmcp>=2.0
 trino>=0.329
+authzed
+grpcio
+mlflow>=3.10

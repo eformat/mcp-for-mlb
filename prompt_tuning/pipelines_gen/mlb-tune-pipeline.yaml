@@ -1,0 +1,857 @@
+# PIPELINE DEFINITION
+# Name: mlb-prompt-tuning
+# Description: RL-based system prompt optimization for game prediction accuracy
+# Inputs:
+#    accuracy_target: float [Default: 0.65]
+#    agent_model: str [Default: 'qwen36-27b']
+#    eval_batch_size: int [Default: 40.0]
+#    gcp_adc_secret_name: str [Default: 'gcp-adc']
+#    llm_base_url: str [Default: 'https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen36-27b/v1']
+#    llm_secret_name: str [Default: 'mlb-agent-maas-key']
+#    max_steps: int [Default: 50.0]
+#    meta_model: str [Default: 'claude-sonnet-4-6']
+#    mlflow_experiment_name: str [Default: 'mlb-prompt-tuning']
+#    mlflow_tracking_uri: str [Default: 'https://mlflow.redhat-ods-applications.svc:8443/mlflow']
+#    mlflow_workspace: str [Default: 'mlb-agent']
+#    trino_host: str [Default: 'trino.mlb-agent.svc.cluster.local']
+#    trino_port: int [Default: 8080.0]
+components:
+  comp-report-results-op:
+    executorLabel: exec-report-results-op
+    inputDefinitions:
+      parameters:
+        metrics:
+          parameterType: STRUCT
+        mlflow_tracking_uri:
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+  comp-run-tuning-op:
+    executorLabel: exec-run-tuning-op
+    inputDefinitions:
+      parameters:
+        accuracy_target:
+          defaultValue: 0.65
+          isOptional: true
+          parameterType: NUMBER_DOUBLE
+        agent_model:
+          parameterType: STRING
+        eval_batch_size:
+          defaultValue: 40.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        experiment_name:
+          parameterType: STRING
+        llm_base_url:
+          parameterType: STRING
+        max_steps:
+          defaultValue: 50.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+        meta_model:
+          defaultValue: claude-sonnet-4-6
+          isOptional: true
+          parameterType: STRING
+        mlflow_tracking_uri:
+          parameterType: STRING
+        mlflow_workspace:
+          defaultValue: ''
+          isOptional: true
+          parameterType: STRING
+        trino_host:
+          defaultValue: trino
+          isOptional: true
+          parameterType: STRING
+        trino_port:
+          defaultValue: 8080.0
+          isOptional: true
+          parameterType: NUMBER_INTEGER
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRUCT
+  comp-setup-mlflow-op:
+    executorLabel: exec-setup-mlflow-op
+    inputDefinitions:
+      parameters:
+        mlflow_experiment_name:
+          parameterType: STRING
+        mlflow_tracking_uri:
+          parameterType: STRING
+        mlflow_workspace:
+          defaultValue: ''
+          isOptional: true
+          parameterType: STRING
+    outputDefinitions:
+      parameters:
+        Output:
+          parameterType: STRING
+deploymentSpec:
+  executors:
+    exec-report-results-op:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - report_results_op
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'pydantic>=2.0.0'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef report_results_op(metrics: dict, mlflow_tracking_uri: str) ->\
+          \ str:\n    \"\"\"Print prompt tuning scorecard.\"\"\"\n    print(\"=\"\
+          \ * 60)\n    print(\"MLB PROMPT TUNING REPORT\")\n    print(\"=\" * 60)\n\
+          \n    if \"error\" in metrics:\n        print(f\"  ERROR: {metrics['error']}\"\
+          )\n        return f\"Tuning failed: {metrics['error']}\"\n\n    print(f\"\
+          \  Best accuracy:  {metrics.get('best_accuracy', 0):.1%}\")\n    print(f\"\
+          \  Total steps:    {metrics.get('final_step', 0)}\")\n    print(f\"  Best\
+          \ version:   v{metrics.get('best_version', '?')}\")\n\n    history = metrics.get(\"\
+          accuracy_history\", [])\n    if history:\n        print(f\"  Accuracy trend:\
+          \ {' \u2192 '.join(f'{a:.1%}' for a in history)}\")\n\n    print(f\"\\nView\
+          \ in MLflow: {mlflow_tracking_uri}\")\n    return f\"Tuning complete. Best\
+          \ accuracy: {metrics.get('best_accuracy', 0):.1%}\"\n\n"
+        image: python:3.12-slim
+    exec-run-tuning-op:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - run_tuning_op
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'mlflow>=3.10'\
+          \ 'nest-asyncio>=1.6.0' 'pydantic>=2.0.0' 'httpx>=0.27.0' 'numpy>=1.26'\
+          \ 'langchain>=0.3' 'langchain-openai>=0.3' 'langchain-google-vertexai>=2.0'\
+          \ 'langchain-core>=0.3' 'langgraph>=0.4' 'trino>=0.329' 'openai>=1.0' 'anthropic>=0.40'\
+          \  &&  python3 -m pip install --quiet --no-warn-script-location 'kfp==2.16.1'\
+          \ '--no-deps' 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"\
+          $0\" \"$@\"\n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef run_tuning_op(\n    mlflow_tracking_uri: str,\n    experiment_name:\
+          \ str,\n    agent_model: str,\n    llm_base_url: str,\n    trino_host: str\
+          \ = \"trino\",\n    trino_port: int = 8080,\n    max_steps: int = 50,\n\
+          \    eval_batch_size: int = 40,\n    accuracy_target: float = 0.65,\n  \
+          \  mlflow_workspace: str = \"\",\n    meta_model: str = \"claude-sonnet-4-6\"\
+          ,\n) -> dict:\n    \"\"\"RL prompt tuning: iteratively improve the Game\
+          \ Prediction Framework.\"\"\"\n    import asyncio\n    import json\n   \
+          \ import os\n    import re\n    from pathlib import Path\n\n    import numpy\
+          \ as np\n\n    os.environ[\"MLFLOW_TRACKING_INSECURE_TLS\"] = \"true\"\n\
+          \    if not os.environ.get(\"MLFLOW_TRACKING_TOKEN\"):\n        sa_token_path\
+          \ = Path(\"/var/run/secrets/kubernetes.io/serviceaccount/token\")\n    \
+          \    if sa_token_path.exists():\n            os.environ[\"MLFLOW_TRACKING_TOKEN\"\
+          ] = sa_token_path.read_text().strip()\n\n    adc_path = Path(\"/adc/application_default_credentials.json\"\
+          )\n    if adc_path.exists():\n        os.environ[\"GOOGLE_APPLICATION_CREDENTIALS\"\
+          ] = str(adc_path)\n\n    import mlflow\n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n\
+          \    if mlflow_workspace:\n        mlflow.set_workspace(mlflow_workspace)\n\
+          \        import mlflow.tracking.fluent as _fluent\n        client = mlflow.MlflowClient()\n\
+          \        exps = client.search_experiments(filter_string=f\"name = '{experiment_name}'\"\
+          )\n        if exps:\n            _fluent._active_experiment_id = exps[0].experiment_id\n\
+          \        else:\n            _fluent._active_experiment_id = client.create_experiment(experiment_name)\n\
+          \    else:\n        mlflow.set_experiment(experiment_name)\n\n    # ------------------------------------------------------------------\n\
+          \    # Prompt splitting and validation\n    # ------------------------------------------------------------------\n\
+          \    START_MARKER = \"### Game Prediction Framework\"\n    END_MARKER =\
+          \ \"### Statistics Definitions\"\n    PLACEHOLDER = \"{PREDICTION_FRAMEWORK}\"\
+          \n\n    def split_prompt(full_text):\n        start = full_text.find(START_MARKER)\n\
+          \        end = full_text.find(END_MARKER)\n        if start == -1 or end\
+          \ == -1:\n            raise ValueError(\"Could not find section markers\
+          \ in prompt\")\n        mutable = full_text[start:end].rstrip() + \"\\n\"\
+          \n        template = full_text[:start] + PLACEHOLDER + \"\\n\" + full_text[end:]\n\
+          \        return template, mutable\n\n    def reconstruct(template, section):\n\
+          \        return template.replace(PLACEHOLDER, section.rstrip() + \"\\n\"\
+          )\n\n    def validate_section(section):\n        issues = []\n        required\
+          \ = [\"Step 1\", \"Step 2\", \"Step 3\", \"Output Format\", \"Anti-Patterns\"\
+          ]\n        for h in required:\n            if h not in section:\n      \
+          \          issues.append(f\"Missing: {h}\")\n        if len(section) > 15000:\n\
+          \            issues.append(f\"Too long: {len(section)} chars\")\n      \
+          \  if len(section) < 200:\n            issues.append(f\"Too short: {len(section)}\
+          \ chars\")\n        return (len(issues) == 0, issues)\n\n    # ------------------------------------------------------------------\n\
+          \    # Inlined: prediction parsing (from load-predictions-trino.py)\n  \
+          \  # ------------------------------------------------------------------\n\
+          \    TEAM_ALIASES = {\n        \"arizona diamondbacks\": \"Arizona Diamondbacks\"\
+          , \"diamondbacks\": \"Arizona Diamondbacks\", \"d-backs\": \"Arizona Diamondbacks\"\
+          , \"ari\": \"Arizona Diamondbacks\",\n        \"atlanta braves\": \"Atlanta\
+          \ Braves\", \"braves\": \"Atlanta Braves\", \"atl\": \"Atlanta Braves\"\
+          ,\n        \"baltimore orioles\": \"Baltimore Orioles\", \"orioles\": \"\
+          Baltimore Orioles\", \"bal\": \"Baltimore Orioles\",\n        \"boston red\
+          \ sox\": \"Boston Red Sox\", \"red sox\": \"Boston Red Sox\", \"bos\": \"\
+          Boston Red Sox\",\n        \"chicago cubs\": \"Chicago Cubs\", \"cubs\"\
+          : \"Chicago Cubs\", \"chc\": \"Chicago Cubs\",\n        \"chicago white\
+          \ sox\": \"Chicago White Sox\", \"white sox\": \"Chicago White Sox\", \"\
+          cws\": \"Chicago White Sox\", \"chw\": \"Chicago White Sox\",\n        \"\
+          cincinnati reds\": \"Cincinnati Reds\", \"reds\": \"Cincinnati Reds\", \"\
+          cin\": \"Cincinnati Reds\",\n        \"cleveland guardians\": \"Cleveland\
+          \ Guardians\", \"guardians\": \"Cleveland Guardians\", \"cle\": \"Cleveland\
+          \ Guardians\",\n        \"colorado rockies\": \"Colorado Rockies\", \"rockies\"\
+          : \"Colorado Rockies\", \"col\": \"Colorado Rockies\",\n        \"detroit\
+          \ tigers\": \"Detroit Tigers\", \"tigers\": \"Detroit Tigers\", \"det\"\
+          : \"Detroit Tigers\",\n        \"houston astros\": \"Houston Astros\", \"\
+          astros\": \"Houston Astros\", \"hou\": \"Houston Astros\",\n        \"kansas\
+          \ city royals\": \"Kansas City Royals\", \"royals\": \"Kansas City Royals\"\
+          , \"kc\": \"Kansas City Royals\",\n        \"los angeles angels\": \"Los\
+          \ Angeles Angels\", \"angels\": \"Los Angeles Angels\", \"laa\": \"Los Angeles\
+          \ Angels\",\n        \"los angeles dodgers\": \"Los Angeles Dodgers\", \"\
+          dodgers\": \"Los Angeles Dodgers\", \"lad\": \"Los Angeles Dodgers\",\n\
+          \        \"miami marlins\": \"Miami Marlins\", \"marlins\": \"Miami Marlins\"\
+          , \"mia\": \"Miami Marlins\",\n        \"milwaukee brewers\": \"Milwaukee\
+          \ Brewers\", \"brewers\": \"Milwaukee Brewers\", \"mil\": \"Milwaukee Brewers\"\
+          ,\n        \"minnesota twins\": \"Minnesota Twins\", \"twins\": \"Minnesota\
+          \ Twins\", \"min\": \"Minnesota Twins\",\n        \"new york mets\": \"\
+          New York Mets\", \"mets\": \"New York Mets\", \"nym\": \"New York Mets\"\
+          ,\n        \"new york yankees\": \"New York Yankees\", \"yankees\": \"New\
+          \ York Yankees\", \"nyy\": \"New York Yankees\",\n        \"oakland athletics\"\
+          : \"Athletics\", \"athletics\": \"Athletics\", \"a's\": \"Athletics\", \"\
+          oak\": \"Athletics\",\n        \"philadelphia phillies\": \"Philadelphia\
+          \ Phillies\", \"phillies\": \"Philadelphia Phillies\", \"phi\": \"Philadelphia\
+          \ Phillies\",\n        \"pittsburgh pirates\": \"Pittsburgh Pirates\", \"\
+          pirates\": \"Pittsburgh Pirates\", \"pit\": \"Pittsburgh Pirates\",\n  \
+          \      \"san diego padres\": \"San Diego Padres\", \"padres\": \"San Diego\
+          \ Padres\", \"sd\": \"San Diego Padres\",\n        \"san francisco giants\"\
+          : \"San Francisco Giants\", \"giants\": \"San Francisco Giants\", \"sf\"\
+          : \"San Francisco Giants\",\n        \"seattle mariners\": \"Seattle Mariners\"\
+          , \"mariners\": \"Seattle Mariners\", \"sea\": \"Seattle Mariners\",\n \
+          \       \"st. louis cardinals\": \"St. Louis Cardinals\", \"cardinals\"\
+          : \"St. Louis Cardinals\", \"stl\": \"St. Louis Cardinals\",\n        \"\
+          tampa bay rays\": \"Tampa Bay Rays\", \"rays\": \"Tampa Bay Rays\", \"tb\"\
+          : \"Tampa Bay Rays\",\n        \"texas rangers\": \"Texas Rangers\", \"\
+          rangers\": \"Texas Rangers\", \"tex\": \"Texas Rangers\",\n        \"toronto\
+          \ blue jays\": \"Toronto Blue Jays\", \"blue jays\": \"Toronto Blue Jays\"\
+          , \"tor\": \"Toronto Blue Jays\",\n        \"washington nationals\": \"\
+          Washington Nationals\", \"nationals\": \"Washington Nationals\", \"wsh\"\
+          : \"Washington Nationals\",\n        \"boston\": \"Boston Red Sox\", \"\
+          cleveland\": \"Cleveland Guardians\", \"colorado\": \"Colorado Rockies\"\
+          ,\n        \"cincinnati\": \"Cincinnati Reds\", \"baltimore\": \"Baltimore\
+          \ Orioles\", \"arizona\": \"Arizona Diamondbacks\",\n        \"atlanta\"\
+          : \"Atlanta Braves\", \"st. louis\": \"St. Louis Cardinals\", \"st louis\"\
+          : \"St. Louis Cardinals\",\n        \"detroit\": \"Detroit Tigers\", \"\
+          houston\": \"Houston Astros\", \"kansas city\": \"Kansas City Royals\",\n\
+          \        \"miami\": \"Miami Marlins\", \"milwaukee\": \"Milwaukee Brewers\"\
+          , \"minnesota\": \"Minnesota Twins\",\n        \"philadelphia\": \"Philadelphia\
+          \ Phillies\", \"pittsburgh\": \"Pittsburgh Pirates\",\n        \"san diego\"\
+          : \"San Diego Padres\", \"san francisco\": \"San Francisco Giants\",\n \
+          \       \"seattle\": \"Seattle Mariners\", \"tampa bay\": \"Tampa Bay Rays\"\
+          , \"texas\": \"Texas Rangers\",\n        \"toronto\": \"Toronto Blue Jays\"\
+          , \"washington\": \"Washington Nationals\", \"oakland\": \"Athletics\",\n\
+          \    }\n\n    def clean_markdown(text):\n        if not text:\n        \
+          \    return text\n        text = text.replace(\"**\", \"\")\n        text\
+          \ = re.sub(r'[\\U00002705\\U0000274c\\U0001f3c6\\U0001f4ca]', '', text)\n\
+          \        return text.strip()\n\n    def normalize_team(name):\n        if\
+          \ not name:\n            return None\n        cleaned = clean_markdown(name).strip()\n\
+          \        cleaned = re.sub(r'^\\d+\\.\\s*', '', cleaned).strip()\n      \
+          \  return TEAM_ALIASES.get(cleaned.lower(), cleaned)\n\n    def _extract_pitcher_name(text):\n\
+          \        if not text:\n            return None\n        cleaned = clean_markdown(text).strip()\n\
+          \        m = re.match(r\"([A-Za-z\\s.'-]+?)(?:\\(|$)\", cleaned)\n     \
+          \   return m.group(1).strip() if m else cleaned[:50]\n\n    def parse_predictions(output_text):\n\
+          \        if not output_text:\n            return []\n        text = clean_markdown(output_text)\n\
+          \        preds = _parse_table_format(text)\n        if not preds:\n    \
+          \        preds = _parse_header_format(text)\n        if not preds:\n   \
+          \         preds = _parse_pick_lines(text)\n        return preds\n\n    def\
+          \ _parse_table_format(text):\n        predictions = []\n        lines =\
+          \ text.split(\"\\n\")\n        header_idx = matchup_col = pick_col = conf_col\
+          \ = rationale_col = None\n        for i, line in enumerate(lines):\n   \
+          \         if \"|\" not in line:\n                continue\n            cells\
+          \ = [c.strip() for c in line.split(\"|\") if c.strip()]\n            lower_cells\
+          \ = [c.lower() for c in cells]\n            if \"matchup\" in lower_cells:\n\
+          \                header_idx = i\n                matchup_col = lower_cells.index(\"\
+          matchup\")\n                pick_col = lower_cells.index(\"pick\") if \"\
+          pick\" in lower_cells else None\n                conf_col = lower_cells.index(\"\
+          confidence\") if \"confidence\" in lower_cells else None\n             \
+          \   rationale_col = None\n                for label in (\"rationale\", \"\
+          key factors\", \"reasoning\"):\n                    if label in lower_cells:\n\
+          \                        rationale_col = lower_cells.index(label)\n    \
+          \                    break\n                continue\n            if header_idx\
+          \ is None or pick_col is None:\n                continue\n            if\
+          \ re.match(r'^[\\s|:-]+$', line):\n                continue\n          \
+          \  if len(cells) <= max(matchup_col, pick_col):\n                continue\n\
+          \            matchup_text = cells[matchup_col]\n            pick_text =\
+          \ cells[pick_col]\n            confidence = cells[conf_col].upper() if conf_col\
+          \ and conf_col < len(cells) else None\n            rationale = cells[rationale_col]\
+          \ if rationale_col and rationale_col < len(cells) else None\n          \
+          \  if confidence:\n                conf_map = {\"HIGH\": \"STRONG\", \"\
+          MODERATE\": \"LEAN\", \"LOW\": \"COIN FLIP\"}\n                confidence\
+          \ = conf_map.get(confidence, confidence)\n            m = re.search(r'(.+?)\\\
+          s+@\\s+(.+?)(?:\\s*[\u2014\\-\u2013]|\\s*$)', matchup_text)\n          \
+          \  if not m:\n                continue\n            away = normalize_team(m.group(1))\n\
+          \            home = normalize_team(m.group(2))\n            picked = normalize_team(pick_text)\n\
+          \            if not picked:\n                continue\n            predictions.append({\"\
+          away_team\": away, \"home_team\": home, \"picked_team\": picked, \"confidence\"\
+          : confidence, \"reasoning\": rationale[:200] if rationale else None})\n\
+          \        return predictions\n\n    def _parse_header_format(text):\n   \
+          \     predictions = []\n        blocks = re.split(r'###\\s*', text)\n  \
+          \      for block in blocks:\n            if not block.strip():\n       \
+          \         continue\n            block_clean = re.sub(r'^\\d+\\.\\s*', '',\
+          \ block.strip())\n            m = re.match(r'(.+?)\\s+@\\s+(.+?)(?:\\s*[\u2014\
+          \\-\u2013].+?)?\\s*\\n', block_clean)\n            if not m:\n         \
+          \       continue\n            away = normalize_team(m.group(1))\n      \
+          \      home = normalize_team(m.group(2))\n            pick_m = re.search(r'Pick:\\\
+          s*(.+?)(?:\\s*$)', block, re.M)\n            picked = normalize_team(pick_m.group(1))\
+          \ if pick_m else None\n            conf_m = re.search(r'Confidence:\\s*(STRONG|LEAN|COIN\\\
+          s*FLIP|HIGH|MODERATE|LOW)', block, re.I)\n            confidence = None\n\
+          \            if conf_m:\n                conf_map = {\"HIGH\": \"STRONG\"\
+          , \"MODERATE\": \"LEAN\", \"LOW\": \"COIN FLIP\"}\n                confidence\
+          \ = conf_map.get(conf_m.group(1).upper(), conf_m.group(1).upper())\n   \
+          \         reason_m = re.search(r'(?:[-\u2022]\\s+|Rationale:\\s*)(.+)',\
+          \ block)\n            reasoning = reason_m.group(1).strip()[:200] if reason_m\
+          \ else None\n            if not picked:\n                continue\n    \
+          \        predictions.append({\"away_team\": away, \"home_team\": home, \"\
+          picked_team\": picked, \"confidence\": confidence, \"reasoning\": reasoning})\n\
+          \        return predictions\n\n    def _parse_pick_lines(text):\n      \
+          \  predictions = []\n        lines = text.split(\"\\n\")\n        for i,\
+          \ line in enumerate(lines):\n            pick_m = re.search(r'Pick:\\s*(.+?)(?:\\\
+          s*$)', line)\n            if not pick_m:\n                continue\n   \
+          \         picked = normalize_team(pick_m.group(1))\n            if not picked:\n\
+          \                continue\n            away = home = None\n            for\
+          \ j in range(max(0, i - 10), i):\n                mm = re.search(r'(.+?)\\\
+          s+@\\s+(.+?)(?:\\s*[\u2014\\-\u2013]|\\s*$)', lines[j])\n              \
+          \  if mm:\n                    away = normalize_team(mm.group(1))\n    \
+          \                home = normalize_team(mm.group(2))\n                  \
+          \  break\n            predictions.append({\"away_team\": away, \"home_team\"\
+          : home, \"picked_team\": picked, \"confidence\": None, \"reasoning\": None})\n\
+          \        return predictions\n\n    # ------------------------------------------------------------------\n\
+          \    # Inlined: replay logic\n    # ------------------------------------------------------------------\n\
+          \    from trino.dbapi import connect as trino_connect\n    from langchain_openai\
+          \ import ChatOpenAI\n    from langgraph.prebuilt import create_react_agent\n\
+          \    from langchain_core.messages import HumanMessage\n    from langchain_core.tools\
+          \ import tool\n\n    try:\n        import nest_asyncio\n        nest_asyncio.apply()\n\
+          \    except ImportError:\n        pass\n\n    BLOCKED_SQL = re.compile(r\"\
+          \\b(INSERT|UPDATE|DELETE|DROP|ALTER|CREATE|TRUNCATE)\\b\", re.IGNORECASE)\n\
+          \    STRING_LITERAL = re.compile(r\"'[^']*'\")\n\n    @tool\n    def query_trino_tool(sql:\
+          \ str) -> str:\n        \"\"\"Execute a read-only SQL query against the\
+          \ MLB Iceberg lakehouse.\n        Schema: lakehouse.mlb. Tables: batting,\
+          \ pitching, fielding, people, teams, parks,\n        series_post, awards_players,\
+          \ hall_of_fame, salaries, home_games, weather_stations,\n        weather_daily,\
+          \ pitch_pitches, pitch_atbats, pitch_games, statcast_pitches,\n        live_games,\
+          \ live_boxscore_batting, live_boxscore_pitching, live_plays,\n        live_pitches,\
+          \ live_standings, prediction_history. Only SELECT allowed.\"\"\"\n     \
+          \   if BLOCKED_SQL.search(STRING_LITERAL.sub(\"''\", sql)):\n          \
+          \  return json.dumps({\"error\": \"Only SELECT queries allowed.\"})\n  \
+          \      try:\n            conn = trino_connect(host=trino_host, port=trino_port,\
+          \ user=\"admin\", catalog=\"lakehouse\", schema=\"mlb\")\n            cur\
+          \ = conn.cursor()\n            cur.execute(sql)\n            columns = [d[0]\
+          \ for d in cur.description] if cur.description else []\n            rows\
+          \ = cur.fetchmany(500)\n            conn.close()\n            return json.dumps({\"\
+          results\": [dict(zip(columns, r)) for r in rows], \"row_count\": len(rows)})\n\
+          \        except Exception as e:\n            return json.dumps({\"error\"\
+          : str(e)})\n\n    @tool\n    def describe_datasets(topic: str = \"\") ->\
+          \ str:\n        \"\"\"List available MLB datasets.\"\"\"\n        return\
+          \ json.dumps({\"datasets\": [\n            {\"name\": \"batting/pitching/fielding\"\
+          , \"years\": \"1871-2025\"},\n            {\"name\": \"live_* (2026 season)\"\
+          , \"years\": \"2026\"},\n            {\"name\": \"prediction_history\",\
+          \ \"years\": \"2026\"},\n        ]})\n\n    @tool\n    def get_methodology(dataset_name:\
+          \ str) -> str:\n        \"\"\"Get methodology for a specific MLB dataset.\"\
+          \"\"\n        return json.dumps({\"data_type\": \"Official MLB records\"\
+          , \"collection\": \"Box scores and Statcast tracking\"})\n\n    def fetch_predictions():\n\
+          \        print(\"Fetching resolved predictions from Trino...\", flush=True)\n\
+          \        conn = trino_connect(host=trino_host, port=trino_port, user=\"\
+          admin\", catalog=\"lakehouse\", schema=\"mlb\")\n        cur = conn.cursor()\n\
+          \        cur.execute(\"\"\"\n            SELECT prediction_id, game_date,\
+          \ away_team, home_team,\n                   picked_team, confidence, was_correct,\n\
+          \                   away_pitcher, home_pitcher, reasoning_summary,\n   \
+          \                actual_winner, away_score, home_score\n            FROM\
+          \ lakehouse.mlb.prediction_history\n            WHERE was_correct IS NOT\
+          \ NULL ORDER BY game_date\n        \"\"\")\n        columns = [d[0] for\
+          \ d in cur.description]\n        rows = cur.fetchall()\n        conn.close()\n\
+          \        result = [dict(zip(columns, row)) for row in rows]\n        print(f\"\
+          \  Found {len(result)} resolved predictions\", flush=True)\n        return\
+          \ result\n\n    def build_agent(system_prompt):\n        if agent_model.startswith(\"\
+          claude\"):\n            from langchain_google_vertexai.model_garden import\
+          \ ChatAnthropicVertex\n            gcp_project = os.environ.get(\"GCP_PROJECT_ID\"\
+          , \"itpc-gcp-product-all-claude\")\n            vertex_region = os.environ.get(\"\
+          VERTEX_REGION\", \"us-east5\")\n            llm = ChatAnthropicVertex(\n\
+          \                model_name=agent_model,\n                project=gcp_project,\n\
+          \                location=vertex_region,\n                temperature=0.3,\n\
+          \                max_tokens=8192,\n            )\n            print(f\"\
+          \  Agent: {agent_model} via Vertex AI ({vertex_region})\", flush=True)\n\
+          \        else:\n            model_endpoint = llm_base_url\n            if\
+          \ not model_endpoint.endswith(\"/v1\"):\n                model_endpoint\
+          \ += \"/v1\"\n            llm = ChatOpenAI(\n                model=agent_model,\
+          \ base_url=model_endpoint,\n                api_key=os.environ.get(\"OPENAI_API_KEY\"\
+          , \"x\"),\n                temperature=0.3, max_tokens=8192, streaming=False,\n\
+          \                model_kwargs={\"extra_body\": {\"chat_template_kwargs\"\
+          : {\"enable_thinking\": False}}},\n            )\n            print(f\"\
+          \  Agent: {agent_model} via MaaS\", flush=True)\n        return create_react_agent(\n\
+          \            model=llm,\n            tools=[query_trino_tool, describe_datasets,\
+          \ get_methodology],\n            prompt=system_prompt,\n        )\n\n  \
+          \  def run_prediction(agent, question):\n        result = asyncio.run(agent.ainvoke(\n\
+          \            {\"messages\": [HumanMessage(content=question)]},\n       \
+          \     config={\"recursion_limit\": 150},\n        ))\n        for m in reversed(result.get(\"\
+          messages\", [])):\n            if hasattr(m, \"type\") and m.type == \"\
+          ai\" and not getattr(m, \"tool_calls\", None):\n                return m.content\
+          \ or \"\"\n        return \"\"\n\n    def format_question(games):\n    \
+          \    lines = [\"Pick the winners of these games:\\n\"]\n        for g in\
+          \ games:\n            away_p = g.get(\"away_pitcher\") or \"TBD\"\n    \
+          \        home_p = g.get(\"home_pitcher\") or \"TBD\"\n            lines.append(f\"\
+          {g['away_team']} @ {g['home_team']}\\n{away_p} vs {home_p}\\n\")\n     \
+          \   return \"\\n\".join(lines)\n\n    def score_batch(parsed, actuals):\n\
+          \        actuals_by_matchup = {(g[\"away_team\"], g[\"home_team\"]): g for\
+          \ g in actuals}\n        correct = total = 0\n        by_tier = {\"STRONG\"\
+          : [0, 0], \"LEAN\": [0, 0], \"COIN FLIP\": [0, 0]}\n        wrong = []\n\
+          \        for pred in parsed:\n            away = normalize_team(pred.get(\"\
+          away_team\", \"\"))\n            home = normalize_team(pred.get(\"home_team\"\
+          , \"\"))\n            picked = normalize_team(pred.get(\"picked_team\",\
+          \ \"\"))\n            confidence = (pred.get(\"confidence\") or \"LEAN\"\
+          ).upper()\n            if confidence not in by_tier:\n                confidence\
+          \ = \"LEAN\"\n            actual = actuals_by_matchup.get((away, home))\n\
+          \            if not actual or not picked:\n                continue\n  \
+          \          total += 1\n            by_tier[confidence][1] += 1\n       \
+          \     if picked == actual[\"actual_winner\"]:\n                correct +=\
+          \ 1\n                by_tier[confidence][0] += 1\n            else:\n  \
+          \              wrong.append({\"away_team\": away, \"home_team\": home, \"\
+          picked\": picked, \"actual_winner\": actual[\"actual_winner\"], \"confidence\"\
+          : confidence})\n        return {\"correct\": correct, \"total\": total,\
+          \ \"accuracy\": correct / max(total, 1), \"by_tier\": {k: tuple(v) for k,\
+          \ v in by_tier.items()}, \"wrong\": wrong}\n\n    def evaluate_prompt(template,\
+          \ section, agent_batch, batch_size=3):\n        full_prompt = reconstruct(template,\
+          \ section)\n        agent = build_agent(full_prompt)\n        total_batches\
+          \ = (len(agent_batch) + batch_size - 1) // batch_size\n        all_parsed\
+          \ = []\n        for i in range(0, len(agent_batch), batch_size):\n     \
+          \       chunk = agent_batch[i:i + batch_size]\n            batch_num = i\
+          \ // batch_size + 1\n            games_str = \", \".join(f\"{g['away_team']}\
+          \ @ {g['home_team']}\" for g in chunk)\n            print(f\"  Batch {batch_num}/{total_batches}:\
+          \ {games_str}\", flush=True)\n            try:\n                response\
+          \ = run_prediction(agent, format_question(chunk))\n                parsed\
+          \ = parse_predictions(response)\n                all_parsed.extend(parsed)\n\
+          \                print(f\"    Parsed {len(parsed)} pick(s)\", flush=True)\n\
+          \            except Exception as e:\n                print(f\"    ERROR:\
+          \ {e}\", flush=True)\n        result = score_batch(all_parsed, agent_batch)\n\
+          \        print(f\"  Result: {result['correct']}/{result['total']} ({result['accuracy']:.1%})\"\
+          , flush=True)\n        return result\n\n    # ------------------------------------------------------------------\n\
+          \    # Inlined: meta-agent (Claude via Vertex AI)\n    # ------------------------------------------------------------------\n\
+          \    import httpx\n\n    def _get_gcp_access_token():\n        \"\"\"Exchange\
+          \ ADC refresh token for an access token.\"\"\"\n        adc_paths = [\n\
+          \            \"/adc/application_default_credentials.json\",\n          \
+          \  os.path.expanduser(\"~/.config/gcloud/application_default_credentials.json\"\
+          ),\n        ]\n        adc = None\n        for p in adc_paths:\n       \
+          \     if os.path.exists(p):\n                adc = json.loads(open(p).read())\n\
+          \                break\n        if not adc:\n            raise RuntimeError(\"\
+          No ADC credentials found\")\n        resp = httpx.post(\"https://oauth2.googleapis.com/token\"\
+          , data={\n            \"client_id\": adc[\"client_id\"],\n            \"\
+          client_secret\": adc[\"client_secret\"],\n            \"refresh_token\"\
+          : adc[\"refresh_token\"],\n            \"grant_type\": \"refresh_token\"\
+          ,\n        })\n        resp.raise_for_status()\n        return resp.json()[\"\
+          access_token\"]\n\n    def _call_claude(prompt_text, temperature=0.4, max_tokens=8192):\n\
+          \        \"\"\"Call Claude via Vertex AI rawPredict.\"\"\"\n        gcp_project\
+          \ = os.environ.get(\"GCP_PROJECT_ID\", \"itpc-gcp-product-all-claude\")\n\
+          \        vertex_region = os.environ.get(\"VERTEX_REGION\", \"us-east5\"\
+          )\n        meta_model = os.environ.get(\"META_MODEL\", \"claude-sonnet-4-6\"\
+          )\n        token = _get_gcp_access_token()\n        url = (\n          \
+          \  f\"https://{vertex_region}-aiplatform.googleapis.com/v1/\"\n        \
+          \    f\"projects/{gcp_project}/locations/{vertex_region}/\"\n          \
+          \  f\"publishers/anthropic/models/{meta_model}:rawPredict\"\n        )\n\
+          \        body = {\n            \"messages\": [{\"role\": \"user\", \"content\"\
+          : prompt_text}],\n            \"max_tokens\": max_tokens,\n            \"\
+          temperature\": temperature,\n            \"anthropic_version\": \"vertex-2023-10-16\"\
+          ,\n        }\n        resp = httpx.post(url, json=body, headers={\n    \
+          \        \"Authorization\": f\"Bearer {token}\",\n            \"Content-Type\"\
+          : \"application/json\",\n        }, timeout=120.0)\n        resp.raise_for_status()\n\
+          \        data = resp.json()\n        return data[\"content\"][0][\"text\"\
+          ]\n\n    def _call_openai_meta(prompt_text):\n        \"\"\"Call meta-agent\
+          \ via OpenAI-compatible endpoint (MaaS).\"\"\"\n        model_endpoint =\
+          \ llm_base_url\n        if not model_endpoint.endswith(\"/v1\"):\n     \
+          \       model_endpoint += \"/v1\"\n        meta_llm = ChatOpenAI(\n    \
+          \        model=meta_model, base_url=model_endpoint,\n            api_key=os.environ.get(\"\
+          OPENAI_API_KEY\", \"x\"),\n            temperature=0.4, max_tokens=8192,\
+          \ streaming=False,\n            model_kwargs={\"extra_body\": {\"chat_template_kwargs\"\
+          : {\"enable_thinking\": False}}},\n        )\n        response = meta_llm.invoke([HumanMessage(content=prompt_text)])\n\
+          \        return response.content\n\n    def generate_improved_prompt(current_section,\
+          \ metrics_text, error_text):\n        meta_prompt = f\"\"\"You are an expert\
+          \ prompt engineer optimizing an MLB game prediction system.\nThe prediction\
+          \ agent uses a \"Game Prediction Framework\" section in its system prompt\
+          \ to decide how to pick winners. Your job is to improve this section to\
+          \ increase prediction accuracy.\n\n## Current Prediction Framework\n{current_section}\n\
+          \n## Performance Metrics\n{metrics_text}\n\n## Error Analysis (Wrong Predictions)\n\
+          {error_text}\n\n## Rules for Modification\n\n### MUST preserve\n- The overall\
+          \ structure: Step 1 (Query the Data), Step 2 (Weight the Factors), Step\
+          \ 3 (Decision Rules), Step 4 (Output Format), Anti-Patterns, Self-Learning\n\
+          - The SQL query templates in Step 1 \u2014 they are correct, do not change\
+          \ them\n- The output format structure in Step 4 \u2014 the parsing system\
+          \ depends on it\n- The Self-Learning section \u2014 it allows the agent\
+          \ to check its track record\n\n### CAN adjust\n- Weight percentages in Step\
+          \ 2 (they should roughly sum to 100%)\n- ERA thresholds in decision rules\
+          \ (e.g., sub-3.00, above-4.50, above-5.00)\n- Run differential thresholds\n\
+          - Confidence tier criteria (STRONG/LEAN/COIN FLIP definitions)\n- Anti-patterns\
+          \ \u2014 add new ones, refine existing ones\n- Decision rule ordering and\
+          \ wording\n- Batch size for processing games\n\n### INCREMENTAL EDITS ONLY\n\
+          Make exactly ONE or TWO targeted changes per iteration. Do NOT rewrite the\
+          \ entire section.\nExamples of good changes:\n- \"Increase bullpen weight\
+          \ from 15% to 20%, decrease streaks from 2% to 0%\"\n- \"Add anti-pattern:\
+          \ never pick a team with negative run differential as STRONG\"\n- \"Change\
+          \ ERA threshold from 4.50 to 4.00 in decision rule 1\"\nLarge rewrites destroy\
+          \ what already works. Small, targeted edits let us measure what helps.\n\
+          \n### Optimization guidance from error analysis\n- If STRONG picks are wrong\
+          \ too often: tighten STRONG criteria\n- If COIN FLIP picks lean wrong: adjust\
+          \ decision rules for close matchups\n- If home field is over-weighted: reduce\
+          \ its weight or add a stronger anti-pattern\n- If bullpen is under-weighted:\
+          \ increase bullpen weight percentage\n- If pitcher ERA thresholds miss too\
+          \ often: adjust the ERA boundaries\n\n## Output\nReturn ONLY the complete\
+          \ replacement text for the Game Prediction Framework section.\nStart with\
+          \ \"### Game Prediction Framework\" and end with the Self-Learning section.\n\
+          Do NOT include any commentary before or after the section.\nIMPORTANT: Keep\
+          \ the section under 12000 characters. Make minimal changes from the current\
+          \ version.\n\"\"\"\n        print(f\"  Meta-agent: {meta_model}\", flush=True)\n\
+          \        if meta_model.startswith(\"claude\"):\n            text = _call_claude(meta_prompt)\n\
+          \        else:\n            text = _call_openai_meta(meta_prompt)\n    \
+          \    start = text.find(\"### Game Prediction Framework\")\n        if start\
+          \ == -1:\n            return text.strip()\n        text = text[start:]\n\
+          \        end = text.find(\"### Statistics Definitions\")\n        if end\
+          \ != -1:\n            text = text[:end]\n        return text.rstrip() +\
+          \ \"\\n\"\n\n    # ------------------------------------------------------------------\n\
+          \    # Main RL loop\n    # ------------------------------------------------------------------\n\
+          \    print(\"=\" * 60, flush=True)\n    print(\"MLB PROMPT TUNING \u2014\
+          \ RL LOOP\", flush=True)\n    print(\"=\" * 60, flush=True)\n\n    # Load\
+          \ system prompt from MLflow\n    print(\"Loading system prompt from MLflow...\"\
+          , flush=True)\n    prompt_name = \"mlb-agent.system\"\n    system_prompt\
+          \ = None\n    starting_version = None\n    try:\n        prompt_obj = mlflow.genai.load_prompt(f\"\
+          prompts:/{prompt_name}@production\", allow_missing=True)\n        if prompt_obj:\n\
+          \            system_prompt = prompt_obj.template\n            starting_version\
+          \ = prompt_obj.version\n            print(f\"  Loaded: {prompt_name} v{starting_version}\
+          \ ({len(system_prompt)} chars)\", flush=True)\n    except Exception as e:\n\
+          \        print(f\"  Could not load prompt: {e}\", flush=True)\n\n    if\
+          \ not system_prompt:\n        return {\"error\": \"Cannot load system prompt\
+          \ from MLflow \u2014 required for tuning\"}\n\n    template, current_section\
+          \ = split_prompt(system_prompt)\n    print(f\"  Mutable section: {len(current_section)}\
+          \ chars\", flush=True)\n\n    # Fetch predictions\n    all_games = fetch_predictions()\n\
+          \    if len(all_games) < 10:\n        return {\"error\": f\"Not enough resolved\
+          \ predictions ({len(all_games)}). Need at least 10.\"}\n\n    rng = np.random.default_rng(42)\n\
+          \    rng.shuffle(all_games)\n    split = int(len(all_games) * 0.7)\n   \
+          \ eval_games = all_games[:split]\n    holdout_games = all_games[split:]\n\
+          \    print(f\"  Eval set: {len(eval_games)} | Holdout: {len(holdout_games)}\"\
+          , flush=True)\n\n    # Start MLflow run\n    mlflow.start_run(run_name=f\"\
+          tune-{agent_model}\")\n    mlflow.log_param(\"model\", agent_model)\n  \
+          \  mlflow.log_param(\"max_steps\", max_steps)\n    mlflow.log_param(\"eval_batch_size\"\
+          , eval_batch_size)\n    mlflow.log_param(\"accuracy_target\", accuracy_target)\n\
+          \    mlflow.log_param(\"eval_games\", len(eval_games))\n\n    # Baseline\
+          \ \u2014 use ALL eval games for stable signal\n    print(\"\\nComputing\
+          \ baseline accuracy...\", flush=True)\n    batch = eval_games\n    baseline\
+          \ = evaluate_prompt(template, current_section, batch)\n    best_accuracy\
+          \ = baseline[\"accuracy\"]\n    best_section = current_section\n    accuracy_history\
+          \ = [best_accuracy]\n    prompt_versions = []\n\n    mlflow.log_metric(\"\
+          accuracy\", best_accuracy, step=0)\n    mlflow.log_metric(\"best_accuracy\"\
+          , best_accuracy, step=0)\n    print(f\"\\nBaseline: {baseline['correct']}/{baseline['total']}\
+          \ ({best_accuracy:.1%})\", flush=True)\n\n    # Fetch prior run history\
+          \ for cross-run learning\n    prior_run_summary = \"\"\n    try:\n     \
+          \   exp = client.get_experiment_by_name(experiment_name)\n        if exp:\n\
+          \            prior_runs = client.search_runs(\n                experiment_ids=[exp.experiment_id],\n\
+          \                order_by=[\"start_time DESC\"],\n                max_results=5,\n\
+          \            )\n            if prior_runs:\n                lines = [\"\
+          Previous tuning runs (most recent first):\"]\n                for pr in\
+          \ prior_runs:\n                    m = pr.data.metrics\n               \
+          \     lines.append(\n                        f\"  baseline={m.get('accuracy',\
+          \ '?'):.1%} \u2192 best={m.get('final_best_accuracy', '?'):.1%} \"\n   \
+          \                     f\"in {int(m.get('total_steps', 0))} steps\"\n   \
+          \                 )\n                prior_run_summary = \"\\n\".join(lines)\n\
+          \                print(f\"\\n{prior_run_summary}\", flush=True)\n    except\
+          \ Exception:\n        pass\n\n    # RL loop\n    for step_num in range(1,\
+          \ max_steps + 1):\n        print(f\"\\n{'=' * 60}\", flush=True)\n     \
+          \   print(f\"Step {step_num}/{max_steps}\", flush=True)\n\n        # Build\
+          \ metrics text for meta-agent\n        by_tier = baseline.get(\"by_tier\"\
+          , {})\n        tier_lines = []\n        for tier in (\"STRONG\", \"LEAN\"\
+          , \"COIN FLIP\"):\n            c, t = by_tier.get(tier, (0, 0))\n      \
+          \      pct = f\"{c / t:.1%}\" if t else \"N/A\"\n            tier_lines.append(f\"\
+          \  {tier}: {c}/{t} ({pct})\")\n        metrics_text = (\n            f\"\
+          Overall accuracy: {baseline['correct']}/{baseline['total']} ({baseline['accuracy']:.1%})\\\
+          n\"\n            f\"Best accuracy so far: {best_accuracy:.1%}\\n\"\n   \
+          \         f\"Step: {step_num}/{max_steps}\\n\"\n            f\"By confidence\
+          \ tier:\\n\" + \"\\n\".join(tier_lines)\n        )\n        if prior_run_summary:\n\
+          \            metrics_text += f\"\\n\\n{prior_run_summary}\\nBe conservative\
+          \ \u2014 avoid large rewrites that regressed accuracy in prior runs.\"\n\
+          \n        wrong = baseline.get(\"wrong\", [])\n        if wrong:\n     \
+          \       error_lines = [f\"{len(wrong)} wrong prediction(s):\"]\n       \
+          \     for w in wrong[:10]:\n                error_lines.append(f\"- {w['away_team']}\
+          \ @ {w['home_team']}: picked {w['picked']} ({w['confidence']}), actual:\
+          \ {w['actual_winner']}\")\n            error_text = \"\\n\".join(error_lines)\n\
+          \        else:\n            error_text = \"No wrong predictions.\"\n\n \
+          \       # Meta-agent generates improved prompt\n        print(\"  Generating\
+          \ improved prompt...\", flush=True)\n        new_section = generate_improved_prompt(current_section,\
+          \ metrics_text, error_text)\n        print(f\"  Generated: {len(new_section)}\
+          \ chars\", flush=True)\n\n        # Validate\n        valid, issues = validate_section(new_section)\n\
+          \        if not valid:\n            print(f\"  INVALID: {'; '.join(issues)}\"\
+          , flush=True)\n            mlflow.log_metric(\"accuracy\", accuracy_history[-1],\
+          \ step=step_num)\n            continue\n\n        # Evaluate\n        print(\"\
+          \  Evaluating...\", flush=True)\n        metrics = evaluate_prompt(template,\
+          \ new_section, batch)\n        current_acc = metrics[\"accuracy\"]\n   \
+          \     prev_acc = accuracy_history[-1]\n\n        reward = current_acc -\
+          \ prev_acc\n        if current_acc > best_accuracy:\n            reward\
+          \ += 0.1\n            best_accuracy = current_acc\n            best_section\
+          \ = new_section\n            print(\"  *** NEW BEST ***\", flush=True)\n\
+          \n        accuracy_history.append(current_acc)\n        current_section\
+          \ = new_section\n        baseline = metrics\n\n        print(f\"  Accuracy:\
+          \ {metrics['correct']}/{metrics['total']} ({current_acc:.1%}) | Best: {best_accuracy:.1%}\
+          \ | Reward: {reward:+.3f}\", flush=True)\n\n        mlflow.log_metric(\"\
+          accuracy\", current_acc, step=step_num)\n        mlflow.log_metric(\"reward\"\
+          , reward, step=step_num)\n        mlflow.log_metric(\"best_accuracy\", best_accuracy,\
+          \ step=step_num)\n        for tier in (\"STRONG\", \"LEAN\", \"COIN FLIP\"\
+          ):\n            c, t = metrics.get(\"by_tier\", {}).get(tier, (0, 0))\n\
+          \            mlflow.log_metric(f\"accuracy_{tier.lower().replace(' ', '_')}\"\
+          , c / max(t, 1), step=step_num)\n\n        # Register prompt version\n \
+          \       try:\n            full_prompt = reconstruct(template, new_section)\n\
+          \            result = mlflow.genai.register_prompt(\n                name=prompt_name,\
+          \ template=full_prompt,\n                commit_message=f\"RL tuning step\
+          \ {step_num}: accuracy={current_acc:.1%}\",\n                tags={\"source\"\
+          : \"rl-tuning\", \"step\": str(step_num), \"accuracy\": f\"{current_acc:.3f}\"\
+          },\n            )\n            prompt_versions.append({\"version\": result.version,\
+          \ \"accuracy\": current_acc})\n            print(f\"  Registered: v{result.version}\"\
+          , flush=True)\n        except Exception as e:\n            print(f\"  Registration\
+          \ skipped: {e}\", flush=True)\n\n        # Check termination\n        if\
+          \ current_acc >= accuracy_target:\n            print(f\"\\nTarget accuracy\
+          \ {accuracy_target:.1%} reached!\", flush=True)\n            break\n   \
+          \     if len(accuracy_history) >= 4:\n            last_4 = accuracy_history[-4:]\n\
+          \            if all(last_4[i] >= last_4[i + 1] for i in range(3)):\n   \
+          \             print(\"\\nPlateau detected (3 consecutive declines).\", flush=True)\n\
+          \                break\n\n    # Holdout validation \u2014 evaluate best\
+          \ prompt on unseen games before promoting\n    baseline_accuracy = accuracy_history[0]\n\
+          \    best_version = None\n    promote = False\n\n    if prompt_versions\
+          \ and best_accuracy > baseline_accuracy:\n        best_entry = max(prompt_versions,\
+          \ key=lambda v: v[\"accuracy\"])\n        best_version = best_entry[\"version\"\
+          ]\n\n        holdout_batch = holdout_games[:eval_batch_size]\n        if\
+          \ holdout_batch:\n            print(f\"\\nHoldout validation ({len(holdout_batch)}\
+          \ games)...\", flush=True)\n            holdout_result = evaluate_prompt(template,\
+          \ best_section, holdout_batch)\n            holdout_acc = holdout_result[\"\
+          accuracy\"]\n            mlflow.log_metric(\"holdout_accuracy\", holdout_acc)\n\
+          \            print(f\"  Holdout: {holdout_result['correct']}/{holdout_result['total']}\
+          \ ({holdout_acc:.1%})\", flush=True)\n\n            if holdout_acc >= baseline_accuracy:\n\
+          \                promote = True\n                print(f\"  Holdout {holdout_acc:.1%}\
+          \ >= baseline {baseline_accuracy:.1%} \u2014 validated!\", flush=True)\n\
+          \            else:\n                print(f\"  Holdout {holdout_acc:.1%}\
+          \ < baseline {baseline_accuracy:.1%} \u2014 overfitting detected\", flush=True)\n\
+          \        else:\n            promote = True\n    elif prompt_versions:\n\
+          \        best_entry = max(prompt_versions, key=lambda v: v[\"accuracy\"\
+          ])\n        best_version = best_entry[\"version\"]\n        print(f\"\\\
+          nNo improvement over baseline {baseline_accuracy:.1%}\", flush=True)\n\n\
+          \    if promote:\n        try:\n            mlflow.genai.set_prompt_alias(prompt_name,\
+          \ alias=\"production\", version=best_version)\n            print(f\"Promoted\
+          \ v{best_version} to @production (eval: {best_accuracy:.1%})\", flush=True)\n\
+          \        except Exception as e:\n            print(f\"Could not promote:\
+          \ {e}\", flush=True)\n    else:\n        print(f\"Restoring @production\
+          \ to v{starting_version}\", flush=True)\n        try:\n            mlflow.genai.set_prompt_alias(prompt_name,\
+          \ alias=\"production\", version=starting_version)\n        except Exception:\n\
+          \            pass\n\n    mlflow.log_metric(\"final_best_accuracy\", best_accuracy)\n\
+          \    mlflow.log_metric(\"total_steps\", len(accuracy_history) - 1)\n   \
+          \ mlflow.end_run()\n\n    return {\n        \"best_accuracy\": float(best_accuracy),\n\
+          \        \"final_step\": len(accuracy_history) - 1,\n        \"best_version\"\
+          : best_version,\n        \"accuracy_history\": [float(a) for a in accuracy_history],\n\
+          \    }\n\n"
+        image: python:3.12-slim
+    exec-setup-mlflow-op:
+      container:
+        args:
+        - --executor_input
+        - '{{$}}'
+        - --function_to_execute
+        - setup_mlflow_op
+        command:
+        - sh
+        - -c
+        - "\nif ! [ -x \"$(command -v pip)\" ]; then\n    python3 -m ensurepip ||\
+          \ python3 -m ensurepip --user || apt-get install python3-pip\nfi\n\nPIP_DISABLE_PIP_VERSION_CHECK=1\
+          \ python3 -m pip install --quiet --no-warn-script-location 'mlflow>=3.10'\
+          \ 'nest-asyncio>=1.6.0' 'pydantic>=2.0.0' 'httpx>=0.27.0'  &&  python3 -m\
+          \ pip install --quiet --no-warn-script-location 'kfp==2.16.1' '--no-deps'\
+          \ 'typing-extensions>=3.7.4,<5; python_version<\"3.9\"' && \"$0\" \"$@\"\
+          \n"
+        - sh
+        - -ec
+        - 'program_path=$(mktemp -d)
+
+
+          printf "%s" "$0" > "$program_path/ephemeral_component.py"
+
+          _KFP_RUNTIME=true python3 -m kfp.dsl.executor_main                         --component_module_path                         "$program_path/ephemeral_component.py"                         "$@"
+
+          '
+        - "\nimport kfp\nfrom kfp import dsl\nfrom kfp.dsl import *\nfrom typing import\
+          \ *\n\ndef setup_mlflow_op(\n    mlflow_tracking_uri: str,\n    mlflow_experiment_name:\
+          \ str,\n    mlflow_workspace: str = \"\",\n) -> str:\n    \"\"\"Configure\
+          \ MLflow tracking and return experiment name.\"\"\"\n    import os\n   \
+          \ from pathlib import Path\n    import mlflow\n\n    os.environ[\"MLFLOW_TRACKING_INSECURE_TLS\"\
+          ] = \"true\"\n\n    if not os.environ.get(\"MLFLOW_TRACKING_TOKEN\"):\n\
+          \        sa_token_path = Path(\"/var/run/secrets/kubernetes.io/serviceaccount/token\"\
+          )\n        if sa_token_path.exists():\n            os.environ[\"MLFLOW_TRACKING_TOKEN\"\
+          ] = sa_token_path.read_text().strip()\n\n    mlflow.set_tracking_uri(mlflow_tracking_uri)\n\
+          \n    if mlflow_workspace:\n        mlflow.set_workspace(mlflow_workspace)\n\
+          \n    experiment_name = mlflow_experiment_name\n\n    if mlflow_workspace:\n\
+          \        import mlflow.tracking.fluent as _fluent\n        client = mlflow.MlflowClient()\n\
+          \        exps = client.search_experiments(filter_string=f\"name = '{experiment_name}'\"\
+          )\n        if exps:\n            _fluent._active_experiment_id = exps[0].experiment_id\n\
+          \        else:\n            _fluent._active_experiment_id = client.create_experiment(experiment_name)\n\
+          \    else:\n        mlflow.set_experiment(experiment_name)\n\n    print(f\"\
+          MLflow: {mlflow_tracking_uri} | Experiment: {experiment_name}\", flush=True)\n\
+          \    return experiment_name\n\n"
+        image: python:3.12-slim
+pipelineInfo:
+  description: RL-based system prompt optimization for game prediction accuracy
+  name: mlb-prompt-tuning
+root:
+  dag:
+    tasks:
+      report-results-op:
+        cachingOptions:
+          enableCache: true
+        componentRef:
+          name: comp-report-results-op
+        dependentTasks:
+        - run-tuning-op
+        inputs:
+          parameters:
+            metrics:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: run-tuning-op
+            mlflow_tracking_uri:
+              componentInputParameter: mlflow_tracking_uri
+        taskInfo:
+          name: report-results-op
+      run-tuning-op:
+        cachingOptions: {}
+        componentRef:
+          name: comp-run-tuning-op
+        dependentTasks:
+        - setup-mlflow-op
+        inputs:
+          parameters:
+            accuracy_target:
+              componentInputParameter: accuracy_target
+            agent_model:
+              componentInputParameter: agent_model
+            eval_batch_size:
+              componentInputParameter: eval_batch_size
+            experiment_name:
+              taskOutputParameter:
+                outputParameterKey: Output
+                producerTask: setup-mlflow-op
+            llm_base_url:
+              componentInputParameter: llm_base_url
+            max_steps:
+              componentInputParameter: max_steps
+            meta_model:
+              componentInputParameter: meta_model
+            mlflow_tracking_uri:
+              componentInputParameter: mlflow_tracking_uri
+            mlflow_workspace:
+              componentInputParameter: mlflow_workspace
+            trino_host:
+              componentInputParameter: trino_host
+            trino_port:
+              componentInputParameter: trino_port
+        taskInfo:
+          name: run-tuning-op
+      setup-mlflow-op:
+        cachingOptions: {}
+        componentRef:
+          name: comp-setup-mlflow-op
+        inputs:
+          parameters:
+            mlflow_experiment_name:
+              componentInputParameter: mlflow_experiment_name
+            mlflow_tracking_uri:
+              componentInputParameter: mlflow_tracking_uri
+            mlflow_workspace:
+              componentInputParameter: mlflow_workspace
+        taskInfo:
+          name: setup-mlflow-op
+  inputDefinitions:
+    parameters:
+      accuracy_target:
+        defaultValue: 0.65
+        isOptional: true
+        parameterType: NUMBER_DOUBLE
+      agent_model:
+        defaultValue: qwen36-27b
+        isOptional: true
+        parameterType: STRING
+      eval_batch_size:
+        defaultValue: 40.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      gcp_adc_secret_name:
+        defaultValue: gcp-adc
+        isOptional: true
+        parameterType: STRING
+      llm_base_url:
+        defaultValue: https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen36-27b/v1
+        isOptional: true
+        parameterType: STRING
+      llm_secret_name:
+        defaultValue: mlb-agent-maas-key
+        isOptional: true
+        parameterType: STRING
+      max_steps:
+        defaultValue: 50.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+      meta_model:
+        defaultValue: claude-sonnet-4-6
+        isOptional: true
+        parameterType: STRING
+      mlflow_experiment_name:
+        defaultValue: mlb-prompt-tuning
+        isOptional: true
+        parameterType: STRING
+      mlflow_tracking_uri:
+        defaultValue: https://mlflow.redhat-ods-applications.svc:8443/mlflow
+        isOptional: true
+        parameterType: STRING
+      mlflow_workspace:
+        defaultValue: mlb-agent
+        isOptional: true
+        parameterType: STRING
+      trino_host:
+        defaultValue: trino.mlb-agent.svc.cluster.local
+        isOptional: true
+        parameterType: STRING
+      trino_port:
+        defaultValue: 8080.0
+        isOptional: true
+        parameterType: NUMBER_INTEGER
+schemaVersion: 2.1.0
+sdkVersion: kfp-2.16.1
+---
+platforms:
+  kubernetes:
+    deploymentSpec:
+      executors:
+        exec-run-tuning-op:
+          secretAsEnv:
+          - keyToEnv:
+            - envVar: OPENAI_API_KEY
+              secretKey: api-key
+            optional: false
+            secretNameParameter:
+              componentInputParameter: llm_secret_name
+          secretAsVolume:
+          - mountPath: /adc
+            optional: false
+            secretNameParameter:
+              componentInputParameter: gcp_adc_secret_name

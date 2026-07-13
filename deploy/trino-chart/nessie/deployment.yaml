@@ -19,10 +19,19 @@ spec:
         runAsNonRoot: true
       containers:
         - name: nessie
-          image: ghcr.io/projectnessie/nessie:latest
+          image: ghcr.io/projectnessie/nessie:0.95.0
           ports:
             - containerPort: 19120
               protocol: TCP
+          env:
+            - name: NESSIE_VERSION_STORE_TYPE
+              value: JDBC
+            - name: QUARKUS_DATASOURCE_JDBC_URL
+              value: jdbc:postgresql://nessie-postgres:5432/nessie
+            - name: QUARKUS_DATASOURCE_USERNAME
+              value: nessie
+            - name: QUARKUS_DATASOURCE_PASSWORD
+              value: nessie
           securityContext:
             allowPrivilegeEscalation: false
             capabilities:

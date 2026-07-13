@@ -45,6 +45,7 @@ deploy-hermes: ## Deploy/upgrade Hermes agent with MLB Kanban picker
 		--set config.model.provider=custom \
 		--set config.model.model=$(AGENT_MODEL) \
 		--set config.model.base_url=$(MAAS_BASE_URL)/$(AGENT_MODEL)/v1 \
+		--set config.model.temperature=0.3 \
 		--set 'config.model.api_key=$${OPENAI_API_KEY}' \
 		--set secretEnv.OPENAI_API_KEY=$${OPENAI_API_KEY}
 

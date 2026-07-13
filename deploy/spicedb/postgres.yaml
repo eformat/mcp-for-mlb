@@ -1,0 +1,64 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: spicedb-postgres
+  labels:
+    app: spicedb-postgres
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: spicedb-postgres
+  template:
+    metadata:
+      labels:
+        app: spicedb-postgres
+    spec:
+      containers:
+        - name: postgres
+          image: registry.redhat.io/rhel9/postgresql-16:latest
+          ports:
+            - containerPort: 5432
+          env:
+            - name: POSTGRESQL_USER
+              value: spicedb
+            - name: POSTGRESQL_PASSWORD
+              value: spicedb
+            - name: POSTGRESQL_DATABASE
+              value: spicedb
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/pgsql/data
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              memory: 512Mi
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: spicedb-postgres-data
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: spicedb-postgres
+spec:
+  selector:
+    app: spicedb-postgres
+  ports:
+    - port: 5432
+      targetPort: 5432
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: spicedb-postgres-data
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 1Gi

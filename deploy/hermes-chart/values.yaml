@@ -34,6 +34,7 @@ config:
     model: my-model
     base_url: http://vllm:8000/v1
     api_key: "${MY_SECRET_API_KEY}"
+    temperature: 0.3
 
   mcp_servers:
     mlb:

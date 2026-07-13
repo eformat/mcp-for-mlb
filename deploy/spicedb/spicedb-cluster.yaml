@@ -5,7 +5,9 @@ metadata:
   name: dev
 spec:
   config:
-    datastoreEngine: memory
+    datastoreEngine: postgres
+    replicas: 1
+    dispatchUpstreamAddr: ""
   secretName: dev-spicedb-config
 ---
 apiVersion: v1
@@ -14,3 +16,4 @@ metadata:
   name: dev-spicedb-config
 stringData:
   preshared_key: "averysecretpresharedkey"
+  datastore_uri: "postgres://spicedb:spicedb@spicedb-postgres:5432/spicedb?sslmode=disable"

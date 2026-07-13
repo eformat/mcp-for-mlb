@@ -38,6 +38,12 @@ confidence at COIN FLIP for that game.
 
 Map team names from ESPN to **canonical names** (see Canonical Team Names section below).
 
+**IMPORTANT:** ESPN is the ONLY source of truth for today's schedule. Do NOT query `live_games`
+to check if games exist — that table only contains COMPLETED games, not upcoming ones. If the
+ESPN page shows games, there ARE games regardless of what Trino says. If ESPN navigation fails
+(timezone issues), try the URL with the previous day's date as ESPN may show it differently
+based on timezone.
+
 ---
 
 ## Step 1: Check Permissions

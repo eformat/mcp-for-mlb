@@ -15,7 +15,7 @@ Environment variables:
     MLFLOW_TRACKING_URI     MLflow server URL
     MLFLOW_WORKSPACE        MLflow workspace (for RHOAI)
     OPENAI_API_KEY          MaaS API key
-    MODEL_NAME              Agent model (default: qwen36-27b)
+    MODEL_NAME              Agent model (default: qwen38-27b)
     MODEL_ENDPOINT          Agent model endpoint
     JUDGE_MODEL             Judge model (default: gemma4)
     TRINO_QUERY_HOST        Trino host (default: localhost)

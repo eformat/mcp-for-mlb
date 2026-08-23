@@ -180,9 +180,9 @@ def _trim_context(state):
 def _build_agent(username: str = "anonymous"):
     """Create a LangGraph ReAct agent with tool-calling support."""
     llm = ChatOpenAI(
-        model=os.environ.get("MODEL_NAME", "qwen36-27b"),
+        model=os.environ.get("MODEL_NAME", "qwen38-27b"),
         base_url=os.environ.get("MODEL_ENDPOINT",
-            "https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen36-27b/v1"),
+            "https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen38-27b/v1"),
         api_key=os.environ.get("OPENAI_API_KEY", "not-required"),
         temperature=0.3,
         max_tokens=8192,

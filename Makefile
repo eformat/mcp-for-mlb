@@ -91,7 +91,7 @@ DATE    ?=
 
 # ── Config ────────────────────────────────────────────────
 MAAS_BASE_URL ?= https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas
-AGENT_MODEL   ?= qwen36-27b
+AGENT_MODEL   ?= qwen38-27b
 PROMPT_MSG    ?= Prompt update
 
 set-model: ## Switch agent model: make set-model AGENT_MODEL=kimi-k2-6

@@ -16,7 +16,7 @@ class PromptOptimizerAgent:
         from langchain_openai import ChatOpenAI
 
         self._llm = ChatOpenAI(
-            model=model_name or os.environ.get("MODEL_NAME", "qwen36-27b"),
+            model=model_name or os.environ.get("MODEL_NAME", "qwen38-27b"),
             base_url=model_endpoint
             or os.environ.get("MODEL_ENDPOINT", ""),
             api_key=os.environ.get("OPENAI_API_KEY", "not-required"),

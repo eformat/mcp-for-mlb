@@ -6,7 +6,7 @@ Usage:
     python3 prompt_tuning/run_tuning.py --dry-run
 
 Environment variables:
-    MODEL_NAME              LLM model name (default: qwen36-27b)
+    MODEL_NAME              LLM model name (default: qwen38-27b)
     MODEL_ENDPOINT          LLM endpoint URL
     OPENAI_API_KEY          API key for the LLM endpoint
     TRINO_QUERY_HOST        Trino host (default: localhost)
@@ -58,7 +58,7 @@ def main():
         "PromptTuningEnv-v0",
         trino_host=os.environ.get("TRINO_QUERY_HOST", "localhost"),
         trino_port=int(os.environ.get("TRINO_QUERY_PORT", "8080")),
-        model_name=os.environ.get("MODEL_NAME", "qwen36-27b"),
+        model_name=os.environ.get("MODEL_NAME", "qwen38-27b"),
         model_endpoint=os.environ.get("MODEL_ENDPOINT", ""),
         mlflow_tracking_uri=os.environ.get("MLFLOW_TRACKING_URI", ""),
         mlflow_workspace=os.environ.get("MLFLOW_WORKSPACE", ""),

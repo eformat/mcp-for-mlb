@@ -57,7 +57,7 @@ class PromptTuningEnv(gym.Env):
 
         self._trino_host = trino_host
         self._trino_port = trino_port
-        self._model_name = model_name or os.environ.get("MODEL_NAME", "qwen36-27b")
+        self._model_name = model_name or os.environ.get("MODEL_NAME", "qwen38-27b")
         self._model_endpoint = model_endpoint or os.environ.get("MODEL_ENDPOINT", "")
         self._mlflow_tracking_uri = mlflow_tracking_uri
         self._mlflow_workspace = mlflow_workspace

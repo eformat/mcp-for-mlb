@@ -31,7 +31,7 @@ run = client.create_run_from_pipeline_package(
         'mlflow_experiment_name': 'mlb-data-agent',
         'dataset_name': 'mlb_data_eval',
         'llm_base_url': 'http://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/gemma4/v1',
-        'agent_model': 'qwen36-27b',
+        'agent_model': 'qwen38-27b',
         'judge_model': 'gemma4',
         'trino_host': 'trino.${NAMESPACE}.svc.cluster.local',
         'trino_port': 8080,

@@ -3,10 +3,10 @@
 # Description: RL-based system prompt optimization for game prediction accuracy
 # Inputs:
 #    accuracy_target: float [Default: 0.65]
-#    agent_model: str [Default: 'qwen36-27b']
+#    agent_model: str [Default: 'qwen38-27b']
 #    eval_batch_size: int [Default: 40.0]
 #    gcp_adc_secret_name: str [Default: 'gcp-adc']
-#    llm_base_url: str [Default: 'https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen36-27b/v1']
+#    llm_base_url: str [Default: 'https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen38-27b/v1']
 #    llm_secret_name: str [Default: 'mlb-agent-maas-key']
 #    max_steps: int [Default: 50.0]
 #    meta_model: str [Default: 'claude-sonnet-4-6']
@@ -786,7 +786,7 @@ root:
         isOptional: true
         parameterType: NUMBER_DOUBLE
       agent_model:
-        defaultValue: qwen36-27b
+        defaultValue: qwen38-27b
         isOptional: true
         parameterType: STRING
       eval_batch_size:
@@ -798,7 +798,7 @@ root:
         isOptional: true
         parameterType: STRING
       llm_base_url:
-        defaultValue: https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen36-27b/v1
+        defaultValue: https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen38-27b/v1
         isOptional: true
         parameterType: STRING
       llm_secret_name:

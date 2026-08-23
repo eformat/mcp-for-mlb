@@ -35,7 +35,7 @@ export MLFLOW_TRACKING_URI=https://localhost:8443/mlflow
 export MLFLOW_TRACKING_INSECURE_TLS=true
 export MLFLOW_TRACKING_TOKEN="$SA_TOKEN"
 export MLFLOW_WORKSPACE="$NAMESPACE"
-export MODEL_NAME="${MODEL_NAME:-qwen36-27b}"
+export MODEL_NAME="${MODEL_NAME:-qwen38-27b}"
 export MODEL_ENDPOINT="${MODEL_ENDPOINT:-https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/${MODEL_NAME}/v1}"
 export OPENAI_API_KEY="${OPENAI_API_KEY:-$(oc get secret mlb-agent-maas-key -n "$NAMESPACE" -o jsonpath='{.data.api-key}' | base64 -d)}"
 

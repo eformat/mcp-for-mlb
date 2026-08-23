@@ -635,7 +635,7 @@ def mlb_eval_pipeline(
     mlflow_experiment_name: str = "mlb-data-agent",
     dataset_name: str = "mlb_data_eval",
     llm_base_url: str = "http://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/gemma4/v1",
-    agent_model: str = "qwen36-27b",
+    agent_model: str = "qwen38-27b",
     judge_model: str = "gemma4",
     trino_host: str = "trino.mlb-agent.svc.cluster.local",
     trino_port: int = 8080,

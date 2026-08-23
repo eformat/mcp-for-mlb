@@ -23,9 +23,9 @@ spec:
             - containerPort: 8080
           env:
             - name: MODEL_NAME
-              value: "qwen36-27b"
+              value: "qwen38-27b"
             - name: MODEL_ENDPOINT
-              value: "https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen36-27b/v1"
+              value: "https://maas.apps.ocp.cloud.rhai-tmm.dev/prelude-maas/qwen38-27b/v1"
             - name: OPENAI_API_KEY
               valueFrom:
                 secretKeyRef:

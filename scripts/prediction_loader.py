@@ -120,6 +120,37 @@ def merge_predictions(df, staging_cur, lakehouse_cur, minio_client, source_tag):
                   AND t."home_team" = CAST(s."home_team" AS VARCHAR)
             )
         """)
+        # Resolve previously-pending rows that now have game results
+        lakehouse_cur.execute(f"""
+            MERGE INTO lakehouse.mlb."{TABLE_NAME}" t
+            USING (
+                SELECT
+                    CAST(prediction_id AS VARCHAR) AS prediction_id,
+                    CAST(game_date AS VARCHAR) AS game_date,
+                    CAST(away_team AS VARCHAR) AS away_team,
+                    CAST(home_team AS VARCHAR) AS home_team,
+                    TRY_CAST(was_correct AS INTEGER) AS was_correct,
+                    CAST(actual_winner AS VARCHAR) AS actual_winner,
+                    TRY_CAST(away_score AS INTEGER) AS away_score,
+                    TRY_CAST(home_score AS INTEGER) AS home_score,
+                    TRY_CAST(game_pk AS INTEGER) AS game_pk
+                FROM staging.mlb."{staging_table}"
+                WHERE was_correct IS NOT NULL
+            ) s ON (
+                t."prediction_id" = s.prediction_id
+                OR (
+                    t."game_date" = s.game_date
+                    AND t."away_team" = s.away_team
+                    AND t."home_team" = s.home_team
+                )
+            )
+            WHEN MATCHED AND t."was_correct" IS NULL THEN UPDATE SET
+                "was_correct" = s.was_correct,
+                "actual_winner" = s.actual_winner,
+                "away_score" = s.away_score,
+                "home_score" = s.home_score,
+                "game_pk" = s.game_pk
+        """)
 
     lakehouse_cur.execute(f'SELECT COUNT(*) FROM lakehouse.mlb."{TABLE_NAME}"')
     count = lakehouse_cur.fetchone()[0]
